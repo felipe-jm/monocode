@@ -113,7 +113,7 @@ describe("OMP native commands", () => {
     expect(mocks.spawnChild).toHaveBeenCalledWith(
       expect.stringMatching(/^monocode-omp-skills-/),
       "/bin/omp",
-      ["--mode", "rpc", "--no-session"],
+      ["--mode", "rpc-ui", "--no-session"],
       "/repo-worktree",
     );
     expect(mocks.request).toHaveBeenCalledWith(

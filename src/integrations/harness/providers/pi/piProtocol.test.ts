@@ -80,7 +80,7 @@ describe("buildPiSpawnArgs", () => {
     ]);
     expect(buildPiSpawnArgs(OMP_FLAVOR, { plan: true })).toEqual([
       "--mode",
-      "rpc",
+      "rpc-ui",
       "--tools",
       "read,grep,glob,lsp",
     ]);
@@ -89,13 +89,13 @@ describe("buildPiSpawnArgs", () => {
   it("uses omp's renamed resume and context flags", () => {
     expect(buildPiSpawnArgs(OMP_FLAVOR, { resume: "abc123" })).toEqual([
       "--mode",
-      "rpc",
+      "rpc-ui",
       "--resume",
       "abc123",
     ]);
     expect(buildPiSpawnArgs(OMP_FLAVOR, { isolated: true })).toEqual([
       "--mode",
-      "rpc",
+      "rpc-ui",
       "--no-session",
       "--no-extensions",
       "--no-tools",

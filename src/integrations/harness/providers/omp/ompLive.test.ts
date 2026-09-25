@@ -491,7 +491,7 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
     expect(transport.spawnChild).toHaveBeenCalledWith(
       "omp-test",
       "/fake/omp",
-      ["--mode", "rpc"],
+      ["--mode", "rpc-ui"],
       "/repo",
     );
   });
