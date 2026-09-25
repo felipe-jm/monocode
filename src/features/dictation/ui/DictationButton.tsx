@@ -92,9 +92,12 @@ function DictationControl({ disabled, onText }: Props) {
     setPhase("transcribing");
     try {
       const samples = await take.stop();
-      if (samples.length === 0) return;
-      const text = await transcribeDictation(samples, loadDictationSettings());
-      if (text) onTextRef.current(text);
+      const text =
+        samples.length === 0
+          ? ""
+          : await transcribeDictation(samples, loadDictationSettings());
+      if (!text) throw new Error("No speech was heard. Check the microphone.");
+      onTextRef.current(text);
     } catch (err) {
       setError(errorText(err));
     } finally {
