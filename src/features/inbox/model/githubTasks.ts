@@ -76,6 +76,8 @@ export type InboxProvider =
 export type InboxItem = Omit<GithubWorkItem, "kind"> & {
   kind: InboxKind;
   projectPath: string;
+  /** Local checkout the item came from; the project itself when absent. */
+  repoPath?: string;
   provider: InboxProvider;
   id?: string;
   identifier?: string;
@@ -187,6 +189,7 @@ let inboxCacheGeneration = 0;
 const inboxListInflight = new Map<string, Promise<InboxListResult>>();
 const repoByPath = new Map<string, string>();
 const repositoriesByPath = new Map<string, string[]>();
+const repositoriesByProject = new Map<string, string[]>();
 const workItemByKey = new Map<string, GithubWorkItem>();
 const workItemInflight = new Map<string, Promise<GithubWorkItem>>();
 const detailsByKey = new Map<string, GithubWorkItemDetails>();
@@ -203,6 +206,7 @@ export function clearInboxCache() {
   inboxListInflight.clear();
   repoByPath.clear();
   repositoriesByPath.clear();
+  repositoriesByProject.clear();
   workItemByKey.clear();
   workItemInflight.clear();
   detailsByKey.clear();
@@ -293,6 +297,50 @@ export async function githubRepositories(cwd: string): Promise<string[]> {
   repositoriesByPath.set(key, repositories);
   repoByPath.set(key, repositories[0]!);
   return repositories;
+}
+
+/** Checkout the item's `gh` calls run in. */
+export function inboxRepoPath(
+  item: Pick<InboxItem, "repoPath" | "projectPath">,
+): string {
+  return item.repoPath || item.projectPath;
+}
+
+/** Git repositories a project folder holds; the folder's own repo when it is one. */
+export async function projectRepositories(
+  projectPath: string,
+): Promise<string[]> {
+  const key = normalizeProjectPath(projectPath);
+  const cached = repositoriesByProject.get(key);
+  if (cached) return cached;
+  const repositories = await invoke<string[]>("git_project_repositories", {
+    cwd: projectPath,
+  });
+  repositoriesByProject.set(key, repositories);
+  return repositories;
+}
+
+async function projectGithubRepositories(
+  projectPath: string,
+): Promise<{ path: string; repoPath: string; repo: string }[]> {
+  const repoPaths = await projectRepositories(projectPath);
+  const settled = await Promise.allSettled(
+    repoPaths.map((repoPath) => githubRepositories(repoPath)),
+  );
+  const found = settled.flatMap((result, index) =>
+    result.status === "fulfilled"
+      ? result.value.map((repo) => ({
+          path: projectPath,
+          repoPath: repoPaths[index]!,
+          repo,
+        }))
+      : [],
+  );
+  if (found.length > 0) return found;
+  const failure = settled.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  throw failure?.reason ?? new Error("No GitHub repository in this project");
 }
 
 export function listGithubWorkItems(
@@ -684,23 +732,22 @@ async function fetchInboxItems(
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
   const discovery = await Promise.allSettled(
-    unique.map((project) => githubRepositories(project.path)),
+    unique.map((project) => projectGithubRepositories(project.path)),
   );
-  const resolved = discovery.flatMap((result, index) =>
-    result.status === "fulfilled"
-      ? result.value.map((repo) => ({ path: unique[index]!.path, repo }))
-      : [],
+  const resolved = discovery.flatMap((result) =>
+    result.status === "fulfilled" ? result.value : [],
   );
   const grouped = groupProjectsByRepo(resolved);
   const githubJobs = grouped.flatMap((project) =>
     (["issue", "pr"] as const).map(async (kind) => {
-      const items = await listGithubWorkItems(project.path, project.repo, {
+      const items = await listGithubWorkItems(project.repoPath, project.repo, {
         ...query,
         kind,
       });
       return items.map((item) => ({
         ...item,
         projectPath: project.path,
+        repoPath: project.repoPath,
         provider: "github" as const,
         repo: item.repo || project.repo,
       }));
@@ -981,20 +1028,17 @@ export function uniqueInboxProjects(
   return unique;
 }
 
-export function groupProjectsByRepo(
-  resolved: readonly { path: string; repo: string }[],
-): { path: string; repo: string }[] {
+export function groupProjectsByRepo<T extends { path: string; repo: string }>(
+  resolved: readonly T[],
+): T[] {
   const seen = new Set<string>();
-  const grouped: { path: string; repo: string }[] = [];
+  const grouped: T[] = [];
   for (const project of resolved) {
     const repo = project.repo.trim().toLowerCase();
     const key = repo || `path:${normalizeProjectPath(project.path)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    grouped.push({
-      path: project.path,
-      repo: project.repo.trim(),
-    });
+    grouped.push({ ...project, repo: project.repo.trim() });
   }
   return grouped;
 }

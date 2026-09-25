@@ -49,6 +49,7 @@ describe.each([
     list.mockImplementation(async ({ kind }) => [workItem("", kind)]);
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "git_project_repositories") return [String((args as { cwd: string }).cwd)];
       if (command === "git_github_repositories") return ["github/repo"];
       if (command === "git_github_work_items") return [];
       if (command === `${commandPrefix}_status`) return { connected };

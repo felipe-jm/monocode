@@ -115,6 +115,7 @@ describe("Jira inbox", () => {
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "jira_status")
         throw new Error("Jira settings are invalid");
+      if (command === "git_project_repositories") return [String((args as { cwd: string }).cwd)];
       if (command === "git_github_repositories") return ["acme/web"];
       if (command === "git_github_work_items") {
         return (args as { kind: string }).kind === "issue"
