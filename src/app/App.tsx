@@ -6169,7 +6169,6 @@ export default function App({
       const launchTitleGeneration = (workCwd: string) => {
         if (
           !live ||
-          !loadAutoTitles() ||
           !shouldGenerateSessionTitle(
             isFirstTurn,
             placeholderTitle,
@@ -6178,6 +6177,7 @@ export default function App({
         ) {
           return;
         }
+        const allowTitle = loadAutoTitles();
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
         void generateHarnessTitle(current.harness, {
@@ -6206,6 +6206,7 @@ export default function App({
                 let next = s;
                 if (
                   generated &&
+                  allowTitle &&
                   s.titleSource !== "user" &&
                   (options?.refreshTitle ||
                     canReplaceSessionTitle(s.title, s.harness, titleSeed))
