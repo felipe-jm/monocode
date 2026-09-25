@@ -1005,7 +1005,7 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
         .map(|(value, _, _, _, _)| *value)
         .unwrap_or(now);
     let updated_at = match &existing {
-        Some((_, prev_updated, prev_blocks, _, _)) if json_eq(prev_blocks, &session.blocks) => {
+        Some((_, prev_updated, prev_blocks, _, _)) if same_activity(prev_blocks, &session.blocks) => {
             *prev_updated
         }
         _ => now,
@@ -1468,11 +1468,39 @@ fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
 
-fn json_eq(raw: &str, incoming: &Value) -> bool {
-    match serde_json::from_str::<Value>(raw) {
-        Ok(previous) => previous == *incoming,
-        Err(_) => false,
+/// Whether the stored transcript matches the incoming one for activity purposes.
+/// A recap written onto a settled user turn is a summary, not new activity, so it
+/// must not move the session up the sidebar or hide linked-work updates.
+fn same_activity(raw: &str, incoming: &Value) -> bool {
+    let Ok(previous) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    match (previous.as_array(), incoming.as_array()) {
+        (Some(old), Some(new)) => {
+            old.len() == new.len() && old.iter().zip(new).all(|(a, b)| same_block_activity(a, b))
+        }
+        _ => previous == *incoming,
     }
+}
+
+fn same_block_activity(a: &Value, b: &Value) -> bool {
+    let (Some(a), Some(b)) = (a.as_object(), b.as_object()) else {
+        return a == b;
+    };
+    let is_user = |block: &serde_json::Map<String, Value>| {
+        block.get("role").and_then(Value::as_str) == Some("user")
+    };
+    if !is_user(a) || !is_user(b) {
+        return a == b;
+    }
+    let activity_keys = |block: &serde_json::Map<String, Value>| {
+        block.keys().filter(|key| key.as_str() != "recap").count()
+    };
+    activity_keys(a) == activity_keys(b)
+        && a
+            .iter()
+            .filter(|(key, _)| key.as_str() != "recap")
+            .all(|(key, value)| b.get(key) == Some(value))
 }
 
 fn optional_json(raw: Option<String>) -> Option<Value> {
@@ -2179,6 +2207,28 @@ mod tests {
         let second = upsert_session(&conn, &next).unwrap();
         assert_eq!(second.updated_at, first.updated_at);
         assert_eq!(second.model, "gpt-5.4");
+    }
+
+    #[test]
+    fn upsert_adding_only_a_recap_keeps_updated_at() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let first = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut recapped = sample("s1", "/tmp/a", "First");
+        recapped.blocks =
+            json!([{ "id": "b1", "role": "user", "text": "hello", "recap": "Said hello." }]);
+        let second = upsert_session(&conn, &recapped).unwrap();
+        assert_eq!(second.updated_at, first.updated_at);
+        let stored = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(stored.blocks[0]["recap"], "Said hello.");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut edited = sample("s1", "/tmp/a", "First");
+        edited.blocks =
+            json!([{ "id": "b1", "role": "user", "text": "hello again", "recap": "Said hello." }]);
+        let third = upsert_session(&conn, &edited).unwrap();
+        assert!(third.updated_at > first.updated_at);
     }
 
     #[test]
