@@ -5555,11 +5555,13 @@ export default function App({
       ) {
         return false;
       }
-      const placeholderTitle = canReplaceSessionTitle(
-        current.title,
-        current.harness,
-        HARNESS_LABEL[current.harness],
-      );
+      const placeholderTitle =
+        current.titleSource !== "user" &&
+        canReplaceSessionTitle(
+          current.title,
+          current.harness,
+          HARNESS_LABEL[current.harness],
+        );
       const title = placeholderTitle
         ? titleFromPrompt(text, current.harness, attachments)
         : current.title;
@@ -6018,11 +6020,13 @@ export default function App({
         : undefined;
       const isFirstTurn = current.blocks.length === 0;
       const placeholderTitle =
-        canReplaceSessionTitle(
+        current.titleSource !== "user" &&
+        (canReplaceSessionTitle(
           current.title,
           current.harness,
           HARNESS_LABEL[current.harness],
-        ) || !!draftBlock;
+        ) ||
+          !!draftBlock);
       const titleSeed =
         isFirstTurn &&
         !current.inboxCard &&
