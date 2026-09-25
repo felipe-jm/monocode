@@ -114,6 +114,7 @@ import {
   zoomOutUiScale,
 } from "../features/settings/model/uiScale";
 import { runUpdateFlow } from "./model/updater";
+import { useIdleRecap } from "./useIdleRecap";
 import {
   displayAttachments,
   prepareAttachments,
@@ -555,6 +556,7 @@ import {
   peekAzureDevOpsWorkItemDetails,
 } from "../features/inbox/model/azureDevOps";
 import {
+  loadAutoTitles,
   loadCloseToTray,
   loadCollapsedProjectRailMode,
   loadFileTabMode,
@@ -1826,6 +1828,8 @@ export default function App({
     }, 650);
     return () => window.clearTimeout(timer);
   }, [persistSession, sessions]);
+
+  useIdleRecap({ sessions, sessionsRef, setSessions });
 
   useEffect(() => {
     const refs = inFlightRefs(sessions, tabs);
@@ -4061,7 +4065,7 @@ export default function App({
       );
       if (open) {
         const title = formatSessionTitle(open.harness, trimmed);
-        const updated = { ...open, title };
+        const updated = { ...open, title, titleSource: "user" as const };
         setSessions((prev) =>
           prev.map((session) => (session.id === sessionId ? updated : session)),
         );
@@ -4076,6 +4080,7 @@ export default function App({
         const updated = {
           ...restored,
           title: formatSessionTitle(restored.harness, trimmed),
+          titleSource: "user" as const,
         };
         const saved = await upsertSession(updated).catch(() => null);
         if (saved) {
@@ -5553,11 +5558,13 @@ export default function App({
       ) {
         return false;
       }
-      const placeholderTitle = canReplaceSessionTitle(
-        current.title,
-        current.harness,
-        HARNESS_LABEL[current.harness],
-      );
+      const placeholderTitle =
+        current.titleSource !== "user" &&
+        canReplaceSessionTitle(
+          current.title,
+          current.harness,
+          HARNESS_LABEL[current.harness],
+        );
       const title = placeholderTitle
         ? titleFromPrompt(text, current.harness, attachments)
         : current.title;
@@ -6016,11 +6023,13 @@ export default function App({
         : undefined;
       const isFirstTurn = current.blocks.length === 0;
       const placeholderTitle =
-        canReplaceSessionTitle(
+        current.titleSource !== "user" &&
+        (canReplaceSessionTitle(
           current.title,
           current.harness,
           HARNESS_LABEL[current.harness],
-        ) || !!draftBlock;
+        ) ||
+          !!draftBlock);
       const titleSeed =
         isFirstTurn &&
         !current.inboxCard &&
@@ -6175,6 +6184,7 @@ export default function App({
         ) {
           return;
         }
+        const allowTitle = loadAutoTitles();
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
         void generateHarnessTitle(current.harness, {
@@ -6203,6 +6213,8 @@ export default function App({
                 let next = s;
                 if (
                   generated &&
+                  allowTitle &&
+                  s.titleSource !== "user" &&
                   (options?.refreshTitle ||
                     canReplaceSessionTitle(s.title, s.harness, titleSeed))
                 ) {
@@ -8019,6 +8031,7 @@ export default function App({
           harness,
           display === "New session" ? HANDOFF_TITLE : display,
         ),
+        titleSource: source.titleSource,
         handoffCard: buildHandoffComposerCard({
           from,
           to: harness,

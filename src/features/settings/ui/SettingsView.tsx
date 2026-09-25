@@ -258,6 +258,7 @@ import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import {
   filterKeybindings,
   currentKeybindings,
+  loadAutoTitles,
   loadClaudeHooks,
   loadCloseToTray,
   loadCollapsedProjectRailMode,
@@ -267,12 +268,15 @@ import {
   loadFollowUpBehavior,
   loadFormatOnSave,
   loadGridArcadeEnabled,
+  loadIdleRecap,
+  loadIdleRecapSeconds,
   loadLiveAgentsEnabled,
   loadModelControls,
   loadNotesEnabled,
   loadQuickComposerEnabled,
   loadQuickComposerShortcut,
   loadTabAnimationsEnabled,
+  saveAutoTitles,
   saveClaudeHooks,
   saveCloseToTray,
   saveCollapsedProjectRailMode,
@@ -282,6 +286,8 @@ import {
   saveFollowUpBehavior,
   saveFormatOnSave,
   saveGridArcadeEnabled,
+  saveIdleRecap,
+  saveIdleRecapSeconds,
   saveLiveAgentsEnabled,
   saveModelControls,
   saveNotesEnabled,
@@ -292,6 +298,7 @@ import {
   settingsSectionDescription,
   settingsSectionLabel,
   COLLAPSED_PROJECT_RAIL_MODE_DEFAULT,
+  IDLE_RECAP_SECONDS_OPTIONS,
   type CollapsedProjectRailMode,
   type DiffViewer,
   type FileTabMode,
@@ -688,6 +695,9 @@ function GeneralPage({
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [notesEnabled, setNotesEnabled] = useState(loadNotesEnabled);
+  const [autoTitles, setAutoTitles] = useState(loadAutoTitles);
+  const [idleRecap, setIdleRecap] = useState(loadIdleRecap);
+  const [idleRecapSeconds, setIdleRecapSeconds] = useState(loadIdleRecapSeconds);
   const [liveAgentsEnabled, setLiveAgentsEnabled] = useState(
     loadLiveAgentsEnabled,
   );
@@ -730,6 +740,22 @@ function GeneralPage({
   const onNotesEnabled = (next: boolean) => {
     saveNotesEnabled(next);
     setNotesEnabled(next);
+  };
+
+  const onAutoTitles = (next: boolean) => {
+    saveAutoTitles(next);
+    setAutoTitles(next);
+  };
+
+  const onIdleRecap = (next: boolean) => {
+    saveIdleRecap(next);
+    setIdleRecap(next);
+  };
+
+  const onIdleRecapSeconds = (next: string) => {
+    const value = Number(next);
+    saveIdleRecapSeconds(value);
+    setIdleRecapSeconds(value);
   };
 
   const onQuickComposerEnabled = (next: boolean) => {
@@ -837,6 +863,30 @@ function GeneralPage({
           description="A global markdown notebook on the project rail. Save a finished turn from the transcript, then mention it later with @note or add it to chat."
         >
           <Toggle label="Notes" on={notesEnabled} onChange={onNotesEnabled} />
+        </Row>
+        <Row
+          id="auto-titles"
+          label="Automatic session titles"
+          description="Name each session from its first message, and update the name when an idle recap finds the subject changed. Sessions you rename keep their name."
+        >
+          <Toggle label="Automatic session titles" on={autoTitles} onChange={onAutoTitles} />
+        </Row>
+        <Row
+          id="idle-recap"
+          label="Idle recap"
+          description="After a session sits idle, add a short recap under the last turn: what was done, where it stands, and the next step."
+        >
+          <div className="flex items-center gap-2">
+            {idleRecap ? (
+              <Select
+                label="Idle recap delay"
+                value={String(idleRecapSeconds)}
+                options={IDLE_RECAP_SECONDS_OPTIONS.map((s) => ({ value: String(s), label: `${s / 60} min` }))}
+                onChange={onIdleRecapSeconds}
+              />
+            ) : null}
+            <Toggle label="Idle recap" on={idleRecap} onChange={onIdleRecap} />
+          </div>
         </Row>
         {IS_MAC && (
           <Row

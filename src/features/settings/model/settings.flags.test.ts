@@ -88,6 +88,20 @@ describe.each([
     undefined,
   ],
   [
+    "monocode.autoTitles",
+    settings.loadAutoTitles,
+    settings.saveAutoTitles,
+    true,
+    undefined,
+  ],
+  [
+    "monocode.idleRecap",
+    settings.loadIdleRecap,
+    settings.saveIdleRecap,
+    true,
+    undefined,
+  ],
+  [
     "monocode.bodyGlass",
     appearance.loadBodyGlass,
     appearance.saveBodyGlass,
@@ -185,6 +199,17 @@ describe.each([
     save(!fallback);
     expect(load()).toBe(!fallback);
   });
+});
+
+it.each([
+  [null, 240],
+  ["60", 60],
+  ["600", 600],
+  ["45", 240],
+  ["abc", 240],
+])("reads idle recap seconds %j as %d", (stored, expected) => {
+  if (stored != null) localStorage.setItem("monocode.idleRecapSeconds", stored);
+  expect(settings.loadIdleRecapSeconds()).toBe(expected);
 });
 
 it("disables close-to-tray outside Windows without consulting storage", () => {

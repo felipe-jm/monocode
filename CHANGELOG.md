@@ -13,11 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Inbox lists GitHub issues and pull requests from every git repository inside a project folder, not only from a folder that is itself a repository. Linked worktrees and hidden folders are skipped. In the filter menu, a project holding several repositories lists them so each can be hidden. PR details, diffs, checks, and actions run in the repository's own checkout, and Fix CI tells the agent where that checkout is. Background polls refresh repositories inside such a folder every five minutes; the refresh button always reloads them.
 - omp sessions show the 5-hour and weekly usage limits in the status bar, read from `omp usage --json` for the provider behind the session's model, so they match omp's own accounts.
 - On macOS, a mic button in the Composer dictates into the prompt at the cursor. Transcription runs on the Mac with a whisper.cpp model file chosen in Settings → Chat → Dictation, where a language, a glossary of terms to spell right, and `wrong => right` corrections can also be set. The model loads on the first dictation and is released after two idle minutes.
+- Idle recap: after a session sits idle (4 minutes by default, 1–10 in Settings), a short muted `※ recap:` line appears under the last turn with what was done, where things stand, and the next step. The same call can rename the session when its subject has clearly changed. Sessions you rename keep their name.
 
 ### Fixed
 
 - omp sessions can ask clarifying questions: MonoCode now starts omp in `rpc-ui` mode, which exposes its `ask` tool, so questions open in the form above the Composer. Choosing **Other (type your own)** opens a follow-up text prompt.
 - Output from omp's local commands such as `/usage` shows in full as a code block, instead of one truncated gray line, and the turn no longer claims the model worked on it.
+- omp and Pi sessions get an LLM title after the first message again. MonoCode picked the alphabetically first cheap model, which on current catalogs is the retired Claude 3 Haiku; it now picks the newest cheap model and retries once with the next one.
 
 ## [0.2.0] - 2026-09-25
 

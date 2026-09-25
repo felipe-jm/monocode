@@ -18,6 +18,7 @@ import {
 } from "./piProtocol";
 import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { mergeStream } from "../../core/streamText";
+import { rankPiTextModels, runWithFallback } from "./piTextModels";
 
 const INIT_TIMEOUT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -51,23 +52,6 @@ function stateFor(flavor: PiFlavor): TextState {
   return state;
 }
 
-function pickTextModel(
-  flavor: PiFlavor,
-  requested?: string,
-): string | undefined {
-  const selected = requested?.trim();
-  if (selected?.includes("/")) return selected;
-  const models = modelsFor(flavor.id).filter((model) =>
-    Boolean(model.nativeId?.includes("/")),
-  );
-  const cheap = models.find((model) =>
-    /haiku|mini|flash|nano|lite|luna/i.test(
-      `${model.nativeId ?? ""} ${model.name} ${model.id}`,
-    ),
-  );
-  return (cheap ?? models[0])?.nativeId?.trim() || undefined;
-}
-
 export async function stopTextPrompt(flavor: PiFlavor): Promise<void> {
   await dropLive(flavor);
 }
@@ -78,7 +62,7 @@ export function warmupText(flavor: PiFlavor, cwd: string): Promise<void> {
   const run = state.turns
     .catch(() => undefined)
     .then(async () => {
-      await ensureLive(flavor, cwd);
+      await ensureLive(flavor, cwd, rankPiTextModels(modelsFor(flavor.id))[0]);
     });
   state.turns = run.then(
     () => undefined,
@@ -99,9 +83,18 @@ export async function runTextPrompt(
   },
 ): Promise<string> {
   const state = stateFor(flavor);
+  const candidates = rankPiTextModels(modelsFor(flavor.id), input.model);
   const run = state.turns
     .catch(() => undefined)
-    .then(() => promptOnLive(flavor, input));
+    .then(() =>
+      runWithFallback(
+        candidates,
+        (model) => promptOnLive(flavor, { ...input, model }),
+        (error) =>
+          !input.signal?.aborted &&
+          !(error instanceof Error && /timed out|cancelled/i.test(error.message)),
+      ),
+    );
   state.turns = run.then(
     () => undefined,
     () => undefined,
@@ -204,11 +197,10 @@ async function promptOnLive(
 async function ensureLive(
   flavor: PiFlavor,
   cwd: string,
-  requestedModel?: string,
+  model?: string,
   modelSettings?: Record<string, string>,
 ): Promise<LiveText> {
   const state = stateFor(flavor);
-  const model = pickTextModel(flavor, requestedModel);
   const settingsKey = modelSettingsKey(modelSettings);
   const current = state.live;
   if (
