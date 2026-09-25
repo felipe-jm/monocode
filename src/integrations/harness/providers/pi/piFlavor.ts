@@ -1,6 +1,16 @@
 import type { HarnessId } from "../../../../features/sessions/model/session";
 import { resolveOmpBinary, resolvePiBinary } from "../../core/child";
 
+const PI_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
 /**
  * omp (oh-my-pi) is a fork of Pi and speaks the same `--mode rpc` NDJSON
  * protocol, so both harnesses run on one adapter core. A flavor carries the
@@ -18,6 +28,8 @@ export type PiFlavor = {
   isolateFlags: readonly string[];
   /** Read-only tools exposed while the shared composer is in Plan mode. */
   planTools: readonly string[];
+  /** Values accepted by `set_thinking_level`, in picker order. */
+  thinkingLevels: readonly string[];
   /** Child id for the shared catalog probe. */
   probeChildId: string;
   /** Child id for the shared one-shot text generator. */
@@ -31,6 +43,7 @@ export const PI_FLAVOR: PiFlavor = {
   resumeFlag: "--session",
   isolateFlags: ["--no-tools", "--no-skills", "--no-context-files"],
   planTools: ["read", "grep", "find", "ls"],
+  thinkingLevels: PI_THINKING_LEVELS,
   probeChildId: "monocode-pi-probe",
   textChildId: "monocode-pi-text",
 };
@@ -38,7 +51,8 @@ export const PI_FLAVOR: PiFlavor = {
 /**
  * omp renamed two of Pi's flags: sessions resume through `--resume` (Pi uses
  * `--session`), and project context is stripped with `--no-rules` (Pi uses
- * `--no-context-files`). Verified against omp 18.0.6 `--help`.
+ * `--no-context-files`). Verified against omp 18.0.6 `--help`. omp also accepts
+ * `auto`, which picks the level per prompt (omp 18.3.0).
  */
 export const OMP_FLAVOR: PiFlavor = {
   id: "omp",
@@ -47,6 +61,7 @@ export const OMP_FLAVOR: PiFlavor = {
   resumeFlag: "--resume",
   isolateFlags: ["--no-tools", "--no-skills", "--no-rules"],
   planTools: ["read", "grep", "glob", "lsp"],
+  thinkingLevels: ["auto", ...PI_THINKING_LEVELS],
   probeChildId: "monocode-omp-probe",
   textChildId: "monocode-omp-text",
 };

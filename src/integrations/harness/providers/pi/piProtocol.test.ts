@@ -29,7 +29,7 @@ import {
   toolTitle,
   turnErrorFromEvent,
 } from "./piProtocol";
-import { OMP_FLAVOR, PI_FLAVOR } from "./piFlavor";
+import { OMP_FLAVOR, PI_FLAVOR, type PiFlavor } from "./piFlavor";
 
 describe("buildPiSpawnArgs", () => {
   it("starts RPC without stripping the user's extensions", () => {
@@ -425,6 +425,21 @@ describe("tools and models", () => {
       value: "false",
     });
     expect(pi?.settings?.some((setting) => setting.id === "fast")).toBe(false);
+  });
+
+  it("offers auto thinking for omp only", () => {
+    const data = {
+      models: [
+        { id: "opus", name: "Opus", provider: "anthropic", reasoning: true },
+      ],
+    };
+    const thinkingValues = (flavor: PiFlavor) =>
+      modelsFromRpcData(flavor, data)[0]
+        ?.settings?.find((setting) => setting.id === "thinking")
+        ?.options?.map((option) => option.value);
+
+    expect(thinkingValues(OMP_FLAVOR)?.[0]).toBe("auto");
+    expect(thinkingValues(PI_FLAVOR)).not.toContain("auto");
   });
 
   it("reads session and context stats", () => {
