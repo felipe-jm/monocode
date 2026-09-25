@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - omp offers an **Auto** thinking level, which picks the effort for each prompt. The level it chose shows next to the model name on the turn's status line, both while working and afterward, for example "Claude Opus 5.5 (auto: low) worked for 3s".
 - The Inbox lists GitHub issues and pull requests from every git repository inside a project folder, not only from a folder that is itself a repository. Linked worktrees and hidden folders are skipped. In the filter menu, a project holding several repositories lists them so each can be hidden. PR details, diffs, checks, and actions run in the repository's own checkout, and Fix CI tells the agent where that checkout is. Background polls refresh repositories inside such a folder every five minutes; the refresh button always reloads them.
+- omp sessions show the 5-hour and weekly usage limits in the status bar, read from `omp usage --json` for the provider behind the session's model, so they match omp's own accounts.
 
 ### Fixed
 
 - omp sessions can ask clarifying questions: MonoCode now starts omp in `rpc-ui` mode, which exposes its `ask` tool, so questions open in the form above the Composer. Choosing **Other (type your own)** opens a follow-up text prompt.
+- Output from omp's local commands such as `/usage` shows in full as a code block, instead of one truncated gray line, and the turn no longer claims the model worked on it.
 
 ## [0.2.0] - 2026-09-25
 

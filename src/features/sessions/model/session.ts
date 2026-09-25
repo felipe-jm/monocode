@@ -335,10 +335,11 @@ export type Block = {
   /** Mid-turn interjection chrome; system blocks only. Body lives in text. */
   interjection?: InterjectionMeta;
   /**
-   * A system row the reader must not miss — an error or an interruption —
-   * rather than turn chrome like a status ping. Never folds into the trail.
+   * A system row the reader must not miss — an error, an interruption, or the
+   * output of a local command — rather than turn chrome like a status ping.
+   * Never folds into the trail.
    */
-  notice?: "error" | "interrupt";
+  notice?: "error" | "interrupt" | "output";
 };
 
 export type RuntimeMode =

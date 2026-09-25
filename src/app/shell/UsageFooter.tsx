@@ -13,6 +13,7 @@ import {
   consumeCodexRateLimitResetCredit,
   fetchClaudeRateLimits,
   fetchCodexRateLimits,
+  fetchOmpRateLimits,
   fetchOpencodeGoRateLimits,
 } from "../../features/providers/model/rateLimitsFetch";
 import {
@@ -55,6 +56,8 @@ export type UsageFooterSession = {
   harness: HarnessId;
   authRequired?: boolean;
   providerAccountId?: string;
+  /** Harness-qualified model id, e.g. `omp:anthropic/claude-opus-5-5`. */
+  model?: string;
 };
 
 export function UsageFooter({
@@ -88,6 +91,13 @@ export function UsageFooter({
   const wantClaude = providers.includes("claude");
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
+  const wantOmp = providers.includes("omp");
+  // `omp:default` names no provider; the parser then takes omp's first report.
+  const ompNativeModel =
+    session?.harness === "omp" ? session.model?.replace(/^omp:/, "") : undefined;
+  const ompModelProvider = ompNativeModel?.includes("/")
+    ? ompNativeModel.split("/")[0]
+    : undefined;
   const [claude, setClaude] = useState<ProviderRateLimits>(() =>
     idleRateLimits("claude"),
   );
@@ -97,6 +107,9 @@ export function UsageFooter({
   const [opencode, setOpencode] = useState<ProviderRateLimits>(() =>
     idleRateLimits("opencode"),
   );
+  const [omp, setOmp] = useState<ProviderRateLimits>(() =>
+    idleRateLimits("omp"),
+  );
   const [now, setNow] = useState(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
   const [, setAccountsVersion] = useState(0);
@@ -104,9 +117,13 @@ export function UsageFooter({
   const claudeRef = useRef(claude);
   const codexRef = useRef(codex);
   const opencodeRef = useRef(opencode);
+  const ompRef = useRef(omp);
+  const ompModelProviderRef = useRef(ompModelProvider);
   claudeRef.current = claude;
   codexRef.current = codex;
   opencodeRef.current = opencode;
+  ompRef.current = omp;
+  ompModelProviderRef.current = ompModelProvider;
   const claudeAccountId =
     session?.harness === "claude" && session.providerAccountId
       ? session.providerAccountId
@@ -148,7 +165,9 @@ export function UsageFooter({
       const fetchOpencode =
         wantOpencode &&
         shouldFetchProvider(opencodeRef.current, { force, visible });
-      if (!fetchClaude && !fetchCodex && !fetchOpencode) return;
+      const fetchOmp =
+        wantOmp && shouldFetchProvider(ompRef.current, { force, visible });
+      if (!fetchClaude && !fetchCodex && !fetchOpencode && !fetchOmp) return;
       if (force) setRefreshing(true);
       const jobs: Promise<void>[] = [];
       if (fetchClaude) {
@@ -177,6 +196,15 @@ export function UsageFooter({
           }),
         );
       }
+      if (fetchOmp) {
+        const modelProvider = ompModelProvider;
+        setOmp((current) => fetchingRateLimits("omp", current));
+        jobs.push(
+          fetchOmpRateLimits(modelProvider).then((value) => {
+            if (modelProvider === ompModelProviderRef.current) setOmp(value);
+          }),
+        );
+      }
       const run = Promise.allSettled(jobs)
         .then(() => undefined)
         .finally(() => {
@@ -193,7 +221,9 @@ export function UsageFooter({
       codexAccountId,
       wantClaude,
       wantCodex,
+      wantOmp,
       wantOpencode,
+      ompModelProvider,
     ],
   );
 
@@ -222,6 +252,14 @@ export function UsageFooter({
     const pending = inflight.current;
     if (pending) void pending.finally(() => refresh(true));
   }, [codexAccountAvailable, codexAccountId, refresh]);
+
+  useEffect(() => {
+    const next = idleRateLimits("omp");
+    ompRef.current = next;
+    setOmp(next);
+    const pending = inflight.current;
+    if (pending) void pending.finally(() => refresh(true));
+  }, [ompModelProvider, refresh]);
 
   useEffect(() => {
     void refresh();
@@ -358,7 +396,8 @@ export function UsageFooter({
   );
 
   const showOpencodeChip = wantOpencode && opencode.status !== "unavailable";
-  const showUsage = wantClaude || wantCodex || showOpencodeChip;
+  const showOmpChip = wantOmp && omp.status !== "unavailable";
+  const showUsage = wantClaude || wantCodex || showOpencodeChip || showOmpChip;
   const showTerminals = terminals.length > 0;
   const showTerminalButton = Boolean(onNewTerminal || onShowTerminal);
   const terminalLabel = projectTerminalActive
@@ -416,6 +455,9 @@ export function UsageFooter({
           ) : null}
           {showOpencodeChip ? (
             <UsageProviderChip limits={opencode} now={now} project={project} />
+          ) : null}
+          {showOmpChip ? (
+            <UsageProviderChip limits={omp} now={now} project={project} />
           ) : null}
           <button
             type="button"

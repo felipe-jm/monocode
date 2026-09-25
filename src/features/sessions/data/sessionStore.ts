@@ -581,7 +581,11 @@ function sanitizeBlock(
   if (block.role === "system") {
     const interjection = sanitizeInterjection(block.interjection);
     if (interjection) next.interjection = interjection;
-    if (block.notice === "error" || block.notice === "interrupt") {
+    if (
+      block.notice === "error" ||
+      block.notice === "interrupt" ||
+      block.notice === "output"
+    ) {
       next.notice = block.notice;
     }
   }
