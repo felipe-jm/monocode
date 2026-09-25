@@ -49,6 +49,7 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSButton", "NSC
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSError", "NSString"] }
 objc2-user-notifications = { version = "0.3.2", features = ["UNUserNotificationCenter", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "block2"] }
 raw-window-handle = "0.6"
+whisper-rs = { version = "0.16", features = ["metal"] }
 tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]

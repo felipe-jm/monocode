@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownCircle,
   Check,
@@ -37,6 +37,13 @@ import {
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { JiraSettings } from "./JiraSettings";
+import {
+  DICTATION_LANGUAGE_DEFAULT,
+  DICTATION_PROMPT_MAX,
+  loadDictationSettings,
+  saveDictationSettings,
+  type DictationSettings as DictationSettingsValue,
+} from "../../dictation/model/dictation";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
 import { RemoveProjectDialog } from "../../projects/ui/RemoveProjectDialog";
@@ -1056,6 +1063,8 @@ function ChatPage() {
         </Row>
       </Group>
 
+      {IS_MAC ? <DictationSettings /> : null}
+
       <Group
         title="Extras"
         description="Idle animation, and nothing else. Turn both off for a still workspace."
@@ -1249,6 +1258,99 @@ function GithubSettings() {
         </p>
       ) : null}
     </>
+  );
+}
+
+function DictationSettings() {
+  const [settings, setSettings] = useState(loadDictationSettings);
+  const update = (patch: Partial<DictationSettingsValue>) => {
+    saveDictationSettings(patch);
+    setSettings((current) => ({ ...current, ...patch }));
+  };
+  const chooseModel = async () => {
+    const path = await openDialog({
+      multiple: false,
+      directory: false,
+      title: "Choose a whisper.cpp model",
+      filters: [{ name: "whisper.cpp model", extensions: ["bin"] }],
+    });
+    if (typeof path === "string" && path) update({ model: path });
+  };
+  const textareaClass =
+    "h-24 w-64 max-w-full resize-y rounded-md border border-content/10 bg-transparent px-2 py-1.5 font-mono text-[12px] text-content outline-none placeholder:text-content/35 focus:border-content/20";
+
+  return (
+    <Group
+      title="Dictation"
+      description="The mic button in the composer transcribes on this Mac with a whisper.cpp model. The model loads when you dictate and is released after two idle minutes."
+    >
+      <Row
+        id="dictation-model"
+        label="Model"
+        description="A ggml model file (.bin), for example ggml-large-v3-turbo.bin. The mic button appears once a model is set."
+      >
+        {settings.model ? (
+          <span
+            className="max-w-56 truncate text-[12px] text-content/50"
+            title={settings.model}
+          >
+            {settings.model.split("/").pop()}
+          </span>
+        ) : null}
+        <SecondaryButton onClick={() => void chooseModel()}>
+          {settings.model ? "Change" : "Choose"}
+        </SecondaryButton>
+        {settings.model ? (
+          <SecondaryButton danger onClick={() => update({ model: null })}>
+            Remove
+          </SecondaryButton>
+        ) : null}
+      </Row>
+      <Row
+        id="dictation-language"
+        label="Language"
+        description="A whisper language code such as pt or en. Use auto to detect it on every take."
+      >
+        <label className="flex h-7 w-24 items-center rounded-md border border-content/10 px-2 focus-within:border-content/20">
+          <input
+            value={settings.language}
+            onChange={(event) => update({ language: event.target.value })}
+            placeholder={DICTATION_LANGUAGE_DEFAULT}
+            aria-label="Dictation language"
+            spellCheck={false}
+            className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
+          />
+        </label>
+      </Row>
+      <Row
+        id="dictation-glossary"
+        label="Glossary"
+        description={`Names and terms to spell right, one per line, most important first. Only the first ${DICTATION_PROMPT_MAX} characters reach the model.`}
+      >
+        <textarea
+          value={settings.glossary}
+          onChange={(event) => update({ glossary: event.target.value })}
+          placeholder={"MonoCode\nTauri"}
+          aria-label="Dictation glossary"
+          spellCheck={false}
+          className={textareaClass}
+        />
+      </Row>
+      <Row
+        id="dictation-corrections"
+        label="Corrections"
+        description="Fixes applied to every transcript, one wrong => right per line. Whole words, any case."
+      >
+        <textarea
+          value={settings.corrections}
+          onChange={(event) => update({ corrections: event.target.value })}
+          placeholder="mono code => MonoCode"
+          aria-label="Dictation corrections"
+          spellCheck={false}
+          className={textareaClass}
+        />
+      </Row>
+    </Group>
   );
 }
 
