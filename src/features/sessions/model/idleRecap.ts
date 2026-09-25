@@ -1,6 +1,26 @@
 import type { Session } from "./session";
 import { lastTurnUserBlock } from "./sessionRecap";
 
+/** A session's busy state and the last real turn it showed while idle. */
+export type TurnWatch = { busy: boolean; idleTurnId: string | undefined };
+
+/**
+ * Advance a session's busy watch. `settled` is the last turn when a busy
+ * period just ended with a new real user turn; busy periods that start no
+ * turn (compaction, internal orchestration nudges) settle nothing.
+ */
+export function watchTurnSettle(
+  prev: TurnWatch | undefined,
+  session: Session,
+): { watch: TurnWatch; settled: string | undefined } {
+  const turnId = lastTurnUserBlock(session.blocks)?.id;
+  // The send flow appends the user block and sets busy in the same update,
+  // so the baseline is the turn seen before the session went busy.
+  if (session.busy) return { watch: { busy: true, idleTurnId: prev?.idleTurnId }, settled: undefined };
+  const settled = prev?.busy && turnId !== prev.idleTurnId ? turnId : undefined;
+  return { watch: { busy: false, idleTurnId: turnId }, settled };
+}
+
 /** The settled, successful last turn still waiting for a recap, ignoring whether the user is active. */
 function pendingRecapTurn(session: Session, settled: ReadonlySet<string>): string | null {
   // Workers report to their lead; leads get recaps like any other session.

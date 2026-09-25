@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newSession, type Session } from "./session";
-import { recapFireAction, recapTarget } from "./idleRecap";
+import { recapFireAction, recapTarget, watchTurnSettle } from "./idleRecap";
 
 function session(overrides: Partial<Session> = {}): Session {
   return {
@@ -60,5 +60,39 @@ describe("recapFireAction", () => {
     const s = session();
     s.blocks[0] = { ...s.blocks[0], recap: "x" };
     expect(recapFireAction(s, settled, "half typed", "u1")).toBe("drop");
+  });
+});
+
+describe("watchTurnSettle", () => {
+  const idle = session();
+  const withTurn = (id: string, busy: boolean) =>
+    session({
+      busy,
+      blocks: [...idle.blocks, { id, role: "user", text: "e agora?" }],
+    });
+
+  it("settles a new user turn that ran while busy", () => {
+    // The send flow appends the user block and sets busy in one update.
+    let { watch } = watchTurnSettle(undefined, idle);
+    ({ watch } = watchTurnSettle(watch, withTurn("u2", true)));
+    expect(watchTurnSettle(watch, withTurn("u2", false)).settled).toBe("u2");
+  });
+  it("does not settle the old turn when busy ran without a new user turn", () => {
+    // e.g. a manual compact, or an internal orchestration continuation.
+    let { watch } = watchTurnSettle(undefined, idle);
+    ({ watch } = watchTurnSettle(watch, session({ busy: true })));
+    const internal = session({
+      blocks: [...idle.blocks, { id: "i1", role: "user", text: "continue", internal: true }],
+    });
+    expect(watchTurnSettle(watch, internal).settled).toBeUndefined();
+  });
+  it("does not settle without a busy period", () => {
+    const { watch } = watchTurnSettle(undefined, idle);
+    expect(watchTurnSettle(watch, withTurn("u2", false)).settled).toBeUndefined();
+    expect(watchTurnSettle(undefined, idle).settled).toBeUndefined();
+  });
+  it("settles a turn first seen already running", () => {
+    const { watch } = watchTurnSettle(undefined, withTurn("u2", true));
+    expect(watchTurnSettle(watch, withTurn("u2", false)).settled).toBe("u2");
   });
 });

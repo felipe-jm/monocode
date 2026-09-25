@@ -1,7 +1,12 @@
 import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { serializeBtwSnapshot } from "../features/sessions/model/btw";
 import { getComposerDraft } from "../features/sessions/model/draftCache";
-import { recapFireAction, recapTarget } from "../features/sessions/model/idleRecap";
+import {
+  recapFireAction,
+  recapTarget,
+  watchTurnSettle,
+  type TurnWatch,
+} from "../features/sessions/model/idleRecap";
 import {
   sessionDisplayTitle,
   sessionWorkCwd,
@@ -10,7 +15,6 @@ import {
 import {
   applySessionRecap,
   buildSessionRecapPrompt,
-  lastTurnUserBlock,
   parseSessionRecap,
 } from "../features/sessions/model/sessionRecap";
 import {
@@ -39,7 +43,7 @@ export function useIdleRecap(input: {
   setSessions: Dispatch<SetStateAction<Session[]>>;
 }) {
   const { sessions, sessionsRef, setSessions } = input;
-  const wasBusy = useRef(new Map<string, boolean>());
+  const watches = useRef(new Map<string, TurnWatch>());
   const settled = useRef(new Set<string>());
   const timers = useRef(new Map<string, Timer>());
 
@@ -48,11 +52,12 @@ export function useIdleRecap(input: {
     const live = new Set<string>();
     for (const session of sessions) {
       live.add(session.id);
-      if (wasBusy.current.get(session.id) && !session.busy) {
-        const last = lastTurnUserBlock(session.blocks);
-        if (last) settled.current.add(last.id);
-      }
-      wasBusy.current.set(session.id, !!session.busy);
+      const { watch, settled: turnId } = watchTurnSettle(
+        watches.current.get(session.id),
+        session,
+      );
+      watches.current.set(session.id, watch);
+      if (turnId) settled.current.add(turnId);
 
       // Typing a draft does not re-render sessions, so the timer ignores it
       // here and the fire check waits for the composer to clear instead.
@@ -78,8 +83,8 @@ export function useIdleRecap(input: {
       timer.abort?.abort();
       timers.current.delete(id);
     }
-    for (const id of wasBusy.current.keys()) {
-      if (!live.has(id)) wasBusy.current.delete(id);
+    for (const id of watches.current.keys()) {
+      if (!live.has(id)) watches.current.delete(id);
     }
   }, [sessions]);
 
@@ -99,11 +104,16 @@ export function useIdleRecap(input: {
     }, loadIdleRecapSeconds() * 1000);
   }
 
-  /** The armed turn's session when it should still get a recap; null drops it. */
+  /**
+   * The armed turn's session when it should still get a recap; null drops it,
+   * including when the effect has since replaced or cleared this timer.
+   */
   function pendingRecap(
     sessionId: string,
     userBlockId: string,
+    timer: Timer,
   ): { session: Session; action: "run" | "wait" } | null {
+    if (timers.current.get(sessionId) !== timer) return null;
     const session = sessionsRef.current.find((s) => s.id === sessionId);
     if (!session || !loadIdleRecap()) return null;
     const action = recapFireAction(
@@ -116,7 +126,7 @@ export function useIdleRecap(input: {
   }
 
   async function fire(sessionId: string, userBlockId: string, timer: Timer) {
-    const pending = pendingRecap(sessionId, userBlockId);
+    const pending = pendingRecap(sessionId, userBlockId, timer);
     if (!pending) return;
     if (pending.action === "wait") {
       // The user is still active in this session: try again after a full delay.
@@ -152,9 +162,13 @@ export function useIdleRecap(input: {
         console.warn("[monocode] idle recap: unreadable output", harness);
         return;
       }
-      // A draft typed meanwhile does not make the recap wrong; a new turn,
-      // an existing recap, or the setting turned off does.
-      if (!pendingRecap(sessionId, userBlockId)) return;
+      // Busy or typing again by now: discard and wait for another idle period.
+      const after = pendingRecap(sessionId, userBlockId, timer);
+      if (!after) return;
+      if (after.action === "wait") {
+        arm(sessionId, userBlockId, timer);
+        return;
+      }
       const allowTitle = loadAutoTitles();
       setSessions((prev) =>
         prev.map((s) =>
