@@ -1451,7 +1451,8 @@ export default function App({
     if (
       active?.harness === "claude" ||
       active?.harness === "codex" ||
-      active?.harness === "opencode"
+      active?.harness === "opencode" ||
+      active?.harness === "omp"
     ) {
       return [active.harness];
     }
@@ -1468,8 +1469,15 @@ export default function App({
         (active.blocks.some((block) => block.role === "user")
           ? DEFAULT_PROVIDER_ACCOUNT_ID
           : undefined),
+      model: active.model,
     };
-  }, [active?.id, active?.harness, active?.blocks, active?.providerAccountId]);
+  }, [
+    active?.id,
+    active?.harness,
+    active?.blocks,
+    active?.providerAccountId,
+    active?.model,
+  ]);
   const activeProviderSignInRequest = useMemo(() => {
     if (
       !active ||

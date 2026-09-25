@@ -1,6 +1,6 @@
 import { asRecord } from "../../../integrations/harness/providers/codex/codexProtocol";
 
-export type RateLimitProvider = "claude" | "codex" | "opencode";
+export type RateLimitProvider = "claude" | "codex" | "opencode" | "omp";
 
 export type RateLimitStatus =
   "idle" | "fetching" | "ok" | "error" | "unavailable";
@@ -320,6 +320,63 @@ export function parseClaudeOAuthUsage(body: string): ProviderRateLimits {
     provider: "claude",
     session: mapUsageWindow(rec.five_hour, SESSION_WINDOW_MINUTES),
     weekly: mapUsageWindow(rec.seven_day, WEEKLY_WINDOW_MINUTES),
+    monthly: null,
+    resetCredits: null,
+    updatedAt: Date.now(),
+    error: null,
+    status: "ok",
+  };
+}
+
+/**
+ * Parse `omp usage --json`, keeping the report for the provider that serves
+ * the session's model. Tier-scoped caps (Claude's Fable week) are skipped:
+ * the chip has one 5h and one weekly slot, and those belong to the shared caps.
+ */
+export function parseOmpUsage(
+  stdout: string,
+  modelProvider: string | undefined,
+): ProviderRateLimits {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return errorRateLimits("omp", "omp usage output was not JSON");
+  }
+  const reports = asRecord(parsed)?.reports;
+  const report = (Array.isArray(reports) ? reports : [])
+    .map(asRecord)
+    .find(
+      (rec) => rec && (modelProvider == null || rec.provider === modelProvider),
+    );
+  if (!report) {
+    return unavailableRateLimits(
+      "omp",
+      `omp has no usage report for ${modelProvider ?? "this model"}`,
+    );
+  }
+  let session: RateLimitWindow | null = null;
+  let weekly: RateLimitWindow | null = null;
+  for (const raw of Array.isArray(report.limits) ? report.limits : []) {
+    const limit = asRecord(raw);
+    if (!limit || asRecord(limit.scope)?.tier != null) continue;
+    const window = asRecord(limit.window);
+    const amount = asRecord(limit.amount);
+    const durationMs = window ? numberField(window, "durationMs") : null;
+    const usedFraction = amount ? numberField(amount, "usedFraction") : null;
+    if (durationMs == null || usedFraction == null) continue;
+    const mapped: RateLimitWindow = {
+      usedPercent: clampUsedPercent(usedFraction * 100),
+      windowMinutes: Math.round(durationMs / 60_000),
+      resetsAt: parseResetTimestamp(window?.resetsAt),
+    };
+    if (mapped.windowMinutes === SESSION_WINDOW_MINUTES) session ??= mapped;
+    else if (mapped.windowMinutes === WEEKLY_WINDOW_MINUTES) weekly ??= mapped;
+  }
+  return {
+    provider: "omp",
+    session,
+    weekly,
     monthly: null,
     resetCredits: null,
     updatedAt: Date.now(),

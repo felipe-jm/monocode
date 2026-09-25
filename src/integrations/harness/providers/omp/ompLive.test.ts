@@ -472,7 +472,7 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
     transport.prompt = (id, command) => {
       frame(id, {
         type: "command_output",
-        text: "\u001b[32mSelected reviewer: careful\u001b[0m",
+        text: "```\n\u001b[32mUsage\u001b[0m\n  5h 16%\n```",
       });
       response(id, command, { agentInvoked: false });
     };
@@ -482,8 +482,8 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
         .message,
     ).toBe("/workflow foo");
     expect(events).toContainEqual({
-      type: "status",
-      text: "Selected reviewer: careful",
+      type: "command.output",
+      text: "```\nUsage\n  5h 16%\n```",
     });
     expect(events.filter((e) => e.type === "message.completed")).toHaveLength(
       1,

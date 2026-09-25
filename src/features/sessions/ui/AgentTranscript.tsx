@@ -679,7 +679,11 @@ function AgentTranscriptComponent({
         {visibleTurns.map((turn, turnIndex) => {
           const isLastTurn = firstVisibleTurn + turnIndex === turns.length - 1;
           const userBlock = turnUserBlock(turn, managed);
-          const durationMs = userBlock?.durationMs;
+          // A local command (omp `/usage`) never reached the model, so it has
+          // no work to time and no model to credit.
+          const durationMs = isLocalCommandTurn(turn)
+            ? undefined
+            : userBlock?.durationMs;
           const settled = !(busy && isLastTurn);
           const proposals = turn.filter((block) => block.orchestration);
           // Proposals are turn results, like the changes card. Keep them out
@@ -1800,6 +1804,16 @@ const TranscriptBlock = memo(function TranscriptBlock({
   if (block.role === "system") {
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
+    }
+    if (block.notice === "output") {
+      return (
+        <div
+          data-command-output
+          className={`min-w-0 py-2 text-content/80 ${embedded ? "" : "px-4"}`}
+        >
+          <AgentMarkdown text={block.text} cwd={cwd} onOpenFile={onOpenFile} />
+        </div>
+      );
     }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
@@ -3005,6 +3019,16 @@ function ActivityRow({
       onOpenFile={onOpenFile}
       onOpenDiff={onOpenDiff}
     />
+  );
+}
+
+function isLocalCommandTurn(turn: Block[]): boolean {
+  const replies = turn.filter(
+    (block) => block.role !== "user" && block.text.trim() !== "",
+  );
+  return (
+    replies.length > 0 &&
+    replies.every((block) => block.notice === "output")
   );
 }
 

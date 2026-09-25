@@ -821,7 +821,7 @@ function handleFrame(
       const text = stringField(rec, "text");
       if (text)
         live.onEvent({
-          type: "status",
+          type: "command.output",
           text: extensionUiTitle({
             id: "output",
             method: "notify",
