@@ -721,7 +721,11 @@ export async function listInboxItems(
   if (!options?.force && inboxListIsFresh(projects, query)) {
     return peekInboxList(projects, query) ?? { items: [], errors: {} };
   }
-  const pending = inboxListInflight.get(key);
+  // A background poll may reuse nested lists, so only background callers join it.
+  const inflightKey = options?.background ? `${key}|background` : key;
+  const pending =
+    inboxListInflight.get(key) ??
+    (options?.background ? inboxListInflight.get(inflightKey) : undefined);
   if (pending) return pending;
   const generation = inboxCacheGeneration;
   const promise = fetchInboxItems(projects, query, options)
@@ -732,9 +736,11 @@ export async function listInboxItems(
       return result;
     })
     .finally(() => {
-      if (inboxListInflight.get(key) === promise) inboxListInflight.delete(key);
+      if (inboxListInflight.get(inflightKey) === promise) {
+        inboxListInflight.delete(inflightKey);
+      }
     });
-  inboxListInflight.set(key, promise);
+  inboxListInflight.set(inflightKey, promise);
   return promise;
 }
 

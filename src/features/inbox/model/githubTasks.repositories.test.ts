@@ -413,6 +413,29 @@ describe("projects holding several repositories", () => {
       now.mockRestore();
     }
   });
+
+  it("does not let a user refresh join a background poll in flight", async () => {
+    mockProject({ "/work/lr": ["/work/lr/api"] }, { "/work/lr/api": ["lr/api"] });
+    const projects = [{ path: "/work/lr" }];
+    await listInboxItems(projects, query, { force: true, background: true });
+
+    const polling = listInboxItems(projects, query, {
+      force: true,
+      background: true,
+    });
+    const refreshed = listInboxItems(projects, query, { force: true });
+    await Promise.all([polling, refreshed]);
+
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          ([command, args]) =>
+            command === "git_github_work_items" &&
+            (args as Record<string, unknown>).repo === "lr/api",
+        ),
+    ).toHaveLength(4);
+  });
 });
 
 describe("inboxRepoPath", () => {

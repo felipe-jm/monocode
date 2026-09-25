@@ -208,10 +208,13 @@ export function useInboxActivity(
     let cancelled = false;
     let pulling = false;
     let pullAgain = false;
+    let pullAgainBackground = true;
 
-    const pull = async (force: boolean) => {
+    /** `background`: timer and visibility polls, which may reuse nested lists. */
+    const pull = async (force: boolean, background = false) => {
       if (pulling) {
         pullAgain ||= force;
+        if (force && !background) pullAgainBackground = false;
         return;
       }
       pulling = true;
@@ -227,7 +230,7 @@ export function useInboxActivity(
       try {
         const listed = await listInboxItems(projects, query, {
           force,
-          background: true,
+          background,
         });
         if (cancelled) return;
         const visible = applyInboxFilters(listed.items, filters, "");
@@ -338,8 +341,10 @@ export function useInboxActivity(
       } finally {
         pulling = false;
         if (!cancelled && pullAgain) {
+          const again = pullAgainBackground;
           pullAgain = false;
-          void pull(true);
+          pullAgainBackground = true;
+          void pull(true, again);
         }
       }
     };
@@ -348,9 +353,9 @@ export function useInboxActivity(
     const stopSelfActivity = subscribeInboxSelfActivity(() => void pull(true));
     // Keep polling while minimized or closed-to-tray: the webview is still
     // alive, and Inbox automation triggers ride this same refresh.
-    const timer = window.setInterval(() => void pull(true), POLL_MS);
+    const timer = window.setInterval(() => void pull(true, true), POLL_MS);
     const onVis = () => {
-      if (!document.hidden) void pull(true);
+      if (!document.hidden) void pull(true, true);
     };
     document.addEventListener("visibilitychange", onVis);
     const onJiraChange = () => void pull(true);
