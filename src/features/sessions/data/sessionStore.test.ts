@@ -165,6 +165,17 @@ describe("sanitizeSessionForPersist", () => {
     });
   });
 
+  it("keeps the idle recap on the user turn only", () => {
+    const session = newSession("codex", "/repo");
+    session.blocks = [
+      { id: "u1", role: "user", text: "oi", recap: "Tudo pronto." },
+      { id: "a1", role: "assistant", text: "Olá", recap: "Stray." },
+    ];
+    const [user, assistant] = sanitizeSessionForPersist(session).blocks;
+    expect(user.recap).toBe("Tudo pronto.");
+    expect(assistant).not.toHaveProperty("recap");
+  });
+
   it("preserves an internal worker's lead, hidden turns, and token metrics", () => {
     const session = {
       ...newSession("claude", "/repo"),

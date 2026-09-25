@@ -530,6 +530,9 @@ function sanitizeBlock(
   if (block.role === "user" && block.internal) next.internal = true;
   const turnMetrics = sanitizeTurnMetrics(block.turnMetrics);
   if (block.role === "user" && turnMetrics) next.turnMetrics = turnMetrics;
+  if (block.role === "user" && typeof block.recap === "string" && block.recap.trim()) {
+    next.recap = block.recap;
+  }
   if (
     block.role === "user" &&
     typeof block.turnEffort === "string" &&

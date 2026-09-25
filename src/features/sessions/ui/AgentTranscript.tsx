@@ -971,6 +971,7 @@ function AgentTranscriptComponent({
               {isLastTurn && latestTurnAccessory && !parked
                 ? latestTurnAccessory
                 : null}
+              {settled && userBlock?.recap ? <TurnRecap text={userBlock.recap} /> : null}
               {durationMs != null && settled ? (
                 <TurnDuration
                   elapsedMs={durationMs}
@@ -4039,4 +4040,21 @@ function syncTranscriptViewport(el: HTMLElement | null) {
   const next = `${Math.max(0, el.clientHeight - pad)}px`;
   if (el.style.getPropertyValue("--transcript-viewport") === next) return;
   el.style.setProperty("--transcript-viewport", next);
+}
+
+/** Idle recap line after a settled turn; backticks render as inline code. */
+function TurnRecap({ text }: { text: string }) {
+  const parts = text.split(/(`[^`]+`)/g);
+  return (
+    <p className="px-4 pt-1 pb-2 text-[13px] leading-relaxed italic text-content/50" data-turn-recap>
+      <span aria-hidden>※ </span>recap:{" "}
+      {parts.map((part, index) =>
+        part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
+          <code key={index} className="not-italic font-mono text-[12px]">{part.slice(1, -1)}</code>
+        ) : (
+          part
+        ),
+      )}
+    </p>
+  );
 }
