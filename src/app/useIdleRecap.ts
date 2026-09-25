@@ -159,7 +159,7 @@ export function useIdleRecap(input: {
       });
       const result = parseSessionRecap(raw);
       if (!result) {
-        console.warn("[monocode] idle recap: unreadable output", harness);
+        console.warn("[monocode] idle recap: unreadable output", harness, session.model);
         return;
       }
       // Busy or typing again by now: discard and wait for another idle period.
@@ -179,7 +179,7 @@ export function useIdleRecap(input: {
       );
     } catch (error) {
       if (!timer.abort.signal.aborted)
-        console.warn("[monocode] idle recap failed", harness, error);
+        console.warn("[monocode] idle recap failed", harness, session.model, error);
     }
   }
 }

@@ -1,12 +1,22 @@
 import type { AgentModel } from "../../../../features/sessions/model/models";
 
-const CHEAP = /haiku|mini|flash|nano|lite|luna/i;
-const DATE_SUFFIX = /-\d{8}$/;
+// Whole words only: `gemini` must not read as `mini`, nor `minimax` as cheap.
+const CHEAP = /(^|[^a-z])(haiku|mini|flash|nano|lite|luna)([^a-z]|$)/i;
+const DATE_SUFFIX = /-(\d{8}|\d{4}-\d{2}-\d{2})$/;
+// Parameter counts such as `14b` or `135m` size a model; they do not version it.
+const SIZE_TOKEN = /^\d+[bm]$/i;
 
 function versionKey(nativeId: string): { version: number[]; dated: boolean } {
   const bare = nativeId.slice(nativeId.indexOf("/") + 1);
   const dated = DATE_SUFFIX.test(bare);
-  const version = (bare.replace(DATE_SUFFIX, "").match(/\d+/g) ?? []).map(Number);
+  const version = bare
+    .replace(DATE_SUFFIX, "")
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => !SIZE_TOKEN.test(token))
+    .flatMap((token) => token.match(/\d+/g) ?? [])
+    // Four or more digits is a year or build stamp, not a version.
+    .filter((digits) => digits.length < 4)
+    .map(Number);
   return { version, dated };
 }
 
@@ -36,7 +46,28 @@ export function rankPiTextModels(models: AgentModel[], requested?: string): stri
   return ids.length > 0 ? [ids[0].id] : [];
 }
 
-/** Try the first candidate; on a retryable failure try the next one once. */
+/** A text-prompt failure tagged with the model that produced it. */
+export class TextModelError extends Error {
+  readonly model: string | undefined;
+  readonly failure: unknown;
+
+  constructor(model: string | undefined, failure: unknown) {
+    super(failure instanceof Error ? failure.message : String(failure));
+    this.name = "TextModelError";
+    this.model = model;
+    this.failure = failure;
+  }
+}
+
+/** The model a text-prompt failure came from, when the error records it. */
+export function failedTextModel(error: unknown): string | undefined {
+  return error instanceof TextModelError ? error.model : undefined;
+}
+
+/**
+ * Try the first candidate; on a retryable failure try the next one once.
+ * The final failure is rethrown as a `TextModelError` naming its model.
+ */
 export async function runWithFallback<T>(
   candidates: (string | undefined)[],
   attempt: (model: string | undefined) => Promise<T>,
@@ -46,8 +77,12 @@ export async function runWithFallback<T>(
   try {
     return await attempt(first);
   } catch (error) {
-    if (candidates.length < 2 || !retryable(error)) throw error;
-    console.warn("[monocode] text model failed, retrying", first, error);
-    return attempt(second);
+    if (candidates.length < 2 || !retryable(error)) throw new TextModelError(first, error);
+    console.warn("[monocode] text model failed, retrying", first, "->", second, error);
+  }
+  try {
+    return await attempt(second);
+  } catch (error) {
+    throw new TextModelError(second, error);
   }
 }

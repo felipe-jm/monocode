@@ -101,3 +101,13 @@ it("does not recap an old turn after a busy period without a new user turn", asy
   await act(async () => vi.advanceTimersByTime(IDLE_MS * 3));
   expect(registry.run).not.toHaveBeenCalled();
 });
+
+it("names the harness and session model when a recap fails", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const failure = new Error("404 not_found_error");
+  registry.run.mockRejectedValueOnce(failure);
+  await runTurn();
+  await act(async () => vi.advanceTimersByTime(IDLE_MS));
+  expect(warn).toHaveBeenCalledWith("[monocode] idle recap failed", "omp", base.model, failure);
+  warn.mockRestore();
+});

@@ -5,6 +5,7 @@ import {
 } from "../../../../features/sessions/model/sessionTitle";
 import { OMP_FLAVOR, PI_FLAVOR, type PiFlavor } from "./piFlavor";
 import { runTextPrompt } from "./piText";
+import { failedTextModel } from "./piTextModels";
 
 const TITLE_TIMEOUT_MS = 45_000;
 
@@ -24,7 +25,7 @@ async function generateSessionTitle(
     });
     return parseGeneratedSessionTitle(output, input.message);
   } catch (error) {
-    console.warn("[monocode] session title failed", flavor.id, error);
+    console.warn("[monocode] session title failed", flavor.id, failedTextModel(error), error);
     return null;
   }
 }
