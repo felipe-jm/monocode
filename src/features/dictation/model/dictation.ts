@@ -82,7 +82,7 @@ export function glossaryPrompt(glossary: string): string {
 type Correction = { pattern: RegExp; replacement: string };
 
 /** `wrong => right` per line; matches whole words, ignoring case. */
-export function parseCorrections(corrections: string): Correction[] {
+function parseCorrections(corrections: string): Correction[] {
   const out: Correction[] = [];
   for (const line of corrections.split("\n")) {
     if (line.trim().startsWith("#")) continue;
