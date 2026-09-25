@@ -309,9 +309,10 @@ export function inboxRepoPath(
 /** Git repositories a project folder holds; the folder's own repo when it is one. */
 export async function projectRepositories(
   projectPath: string,
+  options?: { force?: boolean },
 ): Promise<string[]> {
   const key = normalizeProjectPath(projectPath);
-  const cached = repositoriesByProject.get(key);
+  const cached = options?.force ? undefined : repositoriesByProject.get(key);
   if (cached) return cached;
   const repositories = await invoke<string[]>("git_project_repositories", {
     cwd: projectPath,
@@ -322,8 +323,9 @@ export async function projectRepositories(
 
 async function projectGithubRepositories(
   projectPath: string,
+  force?: boolean,
 ): Promise<{ path: string; repoPath: string; repo: string }[]> {
-  const repoPaths = await projectRepositories(projectPath);
+  const repoPaths = await projectRepositories(projectPath, { force });
   const settled = await Promise.allSettled(
     repoPaths.map((repoPath) => githubRepositories(repoPath)),
   );
@@ -711,7 +713,7 @@ export async function listInboxItems(
   const pending = inboxListInflight.get(key);
   if (pending) return pending;
   const generation = inboxCacheGeneration;
-  const promise = fetchInboxItems(projects, query)
+  const promise = fetchInboxItems(projects, query, options?.force)
     .then((result) => {
       if (generation === inboxCacheGeneration) {
         inboxListCache = { key, ...result, fetchedAt: Date.now() };
@@ -728,11 +730,12 @@ export async function listInboxItems(
 async function fetchInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
+  force?: boolean,
 ): Promise<InboxListResult> {
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
   const discovery = await Promise.allSettled(
-    unique.map((project) => projectGithubRepositories(project.path)),
+    unique.map((project) => projectGithubRepositories(project.path, force)),
   );
   const resolved = discovery.flatMap((result) =>
     result.status === "fulfilled" ? result.value : [],

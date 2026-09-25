@@ -342,6 +342,32 @@ describe("projects holding several repositories", () => {
         .mock.calls.filter(([command]) => command === "git_project_repositories"),
     ).toHaveLength(2);
   });
+
+  it("rediscovers repositories on a forced refresh and keeps the slug cache", async () => {
+    const slugs = { "/work/lr/api": ["lr/api"], "/work/lr/web": ["lr/web"] };
+    mockProject({ "/work/lr": ["/work/lr/api"] }, slugs);
+    const first = await listInboxItems([{ path: "/work/lr" }], query);
+    expect(first.items.map((item) => item.repo)).toEqual(["lr/api"]);
+
+    mockProject({ "/work/lr": ["/work/lr/api", "/work/lr/web"] }, slugs);
+    const refreshed = await listInboxItems([{ path: "/work/lr" }], query, {
+      force: true,
+    });
+
+    expect(refreshed.items.map((item) => item.repo).sort()).toEqual([
+      "lr/api",
+      "lr/web",
+    ]);
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          ([command, args]) =>
+            command === "git_github_repositories" &&
+            (args as Record<string, unknown>).cwd === "/work/lr/api",
+        ),
+    ).toHaveLength(1);
+  });
 });
 
 describe("inboxRepoPath", () => {
