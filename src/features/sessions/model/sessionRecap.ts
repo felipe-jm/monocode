@@ -1,4 +1,4 @@
-import { extractJsonObject, limitSection } from "../../../shared/lib/jsonText";
+import { extractJsonObject } from "../../../shared/lib/jsonText";
 import { formatSessionTitle, type Block, type Session } from "./session";
 import { sanitizeThreadTitle } from "./sessionTitle";
 
@@ -15,7 +15,12 @@ titleChanged: true only when the session's subject has clearly moved away from t
 export type SessionRecap = { recap: string; title: string | null; titleChanged: boolean };
 
 export function buildSessionRecapPrompt(input: { transcript: string; currentTitle: string }): string {
-  return `${RECAP_PROMPT}\n\nCurrent title: ${input.currentTitle}\n\nTranscript:\n${limitSection(input.transcript, TRANSCRIPT_LIMIT)}`;
+  // The recap describes the latest turn, so an oversized transcript keeps its tail.
+  const transcript =
+    input.transcript.length > TRANSCRIPT_LIMIT
+      ? `[earlier conversation truncated]\n\n${input.transcript.slice(-TRANSCRIPT_LIMIT)}`
+      : input.transcript;
+  return `${RECAP_PROMPT}\n\nCurrent title: ${input.currentTitle}\n\nTranscript:\n${transcript}`;
 }
 
 export function parseSessionRecap(raw: string): SessionRecap | null {

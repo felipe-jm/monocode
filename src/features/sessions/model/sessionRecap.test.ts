@@ -47,6 +47,13 @@ describe("buildSessionRecapPrompt", () => {
     expect(prompt).toContain("User: oi");
     expect(prompt).toContain("Deploy nginx");
   });
+
+  it("keeps the latest turns when the transcript is too long", () => {
+    const transcript = `User: FIRST-LINE-MARKER\n${"x".repeat(30_000)}\nAssistant: LATEST-TURN-MARKER`;
+    const prompt = buildSessionRecapPrompt({ transcript, currentTitle: "Deploy nginx" });
+    expect(prompt).toContain("LATEST-TURN-MARKER");
+    expect(prompt).not.toContain("FIRST-LINE-MARKER");
+  });
 });
 
 describe("applySessionRecap", () => {
