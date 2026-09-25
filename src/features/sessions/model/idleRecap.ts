@@ -23,10 +23,13 @@ export function watchTurnSettle(
 
 /** The settled, successful last turn still waiting for a recap, ignoring whether the user is active. */
 function pendingRecapTurn(session: Session, settled: ReadonlySet<string>): string | null {
-  // Workers report to their lead; leads get recaps like any other session.
-  if (session.orchestrationLeadId) return null;
+  // Workers report to their lead and Inbox Ask chats are throwaway; leads get
+  // recaps like any other session.
+  if (session.orchestrationLeadId || session.inboxAsk) return null;
   const user = lastTurnUserBlock(session.blocks);
-  if (!user || user.recap || user.durationMs == null || !settled.has(user.id)) return null;
+  // No `durationMs` check: steered turns never record one, and `settled`
+  // already proves this run saw the turn go busy and come back idle.
+  if (!user || user.recap || !settled.has(user.id)) return null;
   const index = session.blocks.indexOf(user);
   const failed = session.blocks
     .slice(index + 1)

@@ -40,6 +40,15 @@ describe("recapTarget", () => {
   it("skips orchestration workers", () => {
     expect(recapTarget(session({ orchestrationLeadId: "lead" }), settled, undefined)).toBeNull();
   });
+  it("skips Inbox Ask conversations", () => {
+    const inboxAsk = { key: "github:1", title: "Fix login", url: "https://x/1", provider: "github" as const };
+    expect(recapTarget(session({ inboxAsk }), settled, undefined)).toBeNull();
+  });
+  it("targets a settled steered turn that carries no duration", () => {
+    const s = session();
+    s.blocks[0] = { id: "u1", role: "user", text: "suba o nginx" };
+    expect(recapTarget(s, settled, undefined)).toBe("u1");
+  });
 });
 
 describe("recapFireAction", () => {
