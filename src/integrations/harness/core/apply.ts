@@ -167,6 +167,13 @@ export function applyHarnessEvent(
       };
     case "status":
       return appendStatus(session, event.text);
+    case "command.output":
+      return appendBlock(session, {
+        id: crypto.randomUUID(),
+        role: "system",
+        text: event.text,
+        notice: "output",
+      });
     case "usage.limited":
       return {
         ...session,

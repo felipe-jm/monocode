@@ -329,6 +329,31 @@ describe("AgentTranscript collapsed work", () => {
     expect(markup).toContain("Worked for 9s");
     expect(markup).not.toContain("Claude Opus 5 worked for 9s");
   });
+
+  it("shows a local command's multi-line output without crediting a model", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentTranscript, {
+        blocks: [
+          { id: "user", role: "user", text: "/usage", durationMs: 1_000 },
+          {
+            id: "out",
+            role: "system",
+            notice: "output",
+            text: "```\nUsage\n- Claude 5 Hour\n  16% used\n```",
+          },
+        ],
+        harness: "omp",
+        model: "omp:anthropic/claude-opus-5-5",
+      }),
+    );
+
+    expect(markup).toContain("data-command-output");
+    const lines = markup.split(/<[^>]+>/).filter(Boolean);
+    expect(lines).toEqual(
+      expect.arrayContaining(["Usage", "- Claude 5 Hour", "  16% used"]),
+    );
+    expect(markup).not.toMatch(/worked for/i);
+  });
   it("marks the edited message with a quiet visual state instead of a text banner", () => {
     const markup = renderToStaticMarkup(
       createElement(AgentTranscript, {

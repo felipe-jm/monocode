@@ -858,6 +858,7 @@ const EXEC_ALLOWED_ARGS: &[&[&str]] = &[
     &["models"],
     &["status", "--json"],
     &["agent", "list"],
+    &["usage", "--json"],
 ];
 
 fn exec_args_allowed(args: &[String]) -> bool {
@@ -2850,6 +2851,7 @@ mod exec_allowlist_tests {
         assert!(exec_args_allowed(&args(&["models"])));
         assert!(exec_args_allowed(&args(&["status", "--json"])));
         assert!(exec_args_allowed(&args(&["agent", "list"])));
+        assert!(exec_args_allowed(&args(&["usage", "--json"])));
     }
 
     #[test]

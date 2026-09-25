@@ -22,6 +22,8 @@ export type HarnessEvent =
       modelSettings?: Record<string, string>;
     }
   | { type: "status"; text: string }
+  /** Output of a local command the harness ran without invoking the model. */
+  | { type: "command.output"; text: string }
   /** Thinking level the provider resolved for the active turn (omp `auto`). */
   | { type: "turn.effort"; level: string }
   /** The provider refused the turn until its usage window resets (epoch ms). */

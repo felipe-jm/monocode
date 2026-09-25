@@ -12,6 +12,7 @@ import {
   mapUsageWindow,
   parseClaudeOAuthUsage,
   parseCodexRateLimits,
+  parseOmpUsage,
   parseOpencodeGoUsage,
   parseResetTimestamp,
   RATE_LIMIT_MIN_REFETCH_MS,
@@ -290,6 +291,53 @@ describe("parseOpencodeGoUsage", () => {
     expect(limits.session?.usedPercent).toBe(5);
     expect(limits.weekly).toBeNull();
     expect(limits.monthly).toBeNull();
+  });
+});
+
+describe("parseOmpUsage", () => {
+  const limit = (
+    id: string,
+    durationMs: number,
+    usedFraction: number,
+    scope: Record<string, unknown> = { shared: true },
+  ) => ({
+    id,
+    scope,
+    window: { durationMs, resetsAt: 1_790_372_999_628 },
+    amount: { usedFraction, unit: "percent" },
+  });
+  const stdout = JSON.stringify({
+    reports: [
+      {
+        provider: "anthropic",
+        limits: [
+          limit("anthropic:7d:fable", 604_800_000, 0.14, { tier: "fable" }),
+          limit("anthropic:5h", 18_000_000, 0.17),
+          limit("anthropic:7d", 604_800_000, 0.34),
+        ],
+      },
+      {
+        provider: "openai-codex",
+        limits: [limit("openai-codex:secondary", 604_800_000, 0.09)],
+      },
+    ],
+  });
+
+  it("reads the shared windows of the session model's provider", () => {
+    const limits = parseOmpUsage(stdout, "anthropic");
+    expect(limits.status).toBe("ok");
+    expect(limits.session).toEqual({
+      usedPercent: 17,
+      windowMinutes: 300,
+      resetsAt: 1_790_372_999_628,
+    });
+    expect(limits.weekly?.usedPercent).toBe(34);
+    expect(parseOmpUsage(stdout, "openai-codex").weekly?.usedPercent).toBe(9);
+  });
+
+  it("is unavailable when omp has no account for the model's provider", () => {
+    expect(parseOmpUsage(stdout, "google").status).toBe("unavailable");
+    expect(parseOmpUsage("not json", "anthropic").status).toBe("error");
   });
 });
 

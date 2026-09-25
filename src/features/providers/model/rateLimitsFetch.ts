@@ -4,13 +4,16 @@ import {
   errorRateLimits,
   parseClaudeOAuthUsage,
   parseCodexRateLimits,
+  parseOmpUsage,
   parseOpencodeGoUsage,
   unavailableRateLimits,
   type ProviderRateLimits,
 } from "./rateLimits";
 import {
+  execChild,
   killChild,
   resolveCodexBinary,
+  resolveOmpBinary,
   spawnChild,
   unwatchChild,
   watchChild,
@@ -110,6 +113,24 @@ export async function fetchClaudeRateLimits(
     return errorRateLimits(
       "claude",
       error instanceof Error ? error.message : "Claude usage unavailable",
+    );
+  }
+}
+
+/** Limits for the provider behind an omp session's model, read through omp's own accounts. */
+export async function fetchOmpRateLimits(
+  modelProvider: string | undefined,
+): Promise<ProviderRateLimits> {
+  try {
+    const { path } = await resolveOmpBinary();
+    return parseOmpUsage(
+      await execChild(path, ["usage", "--json"]),
+      modelProvider,
+    );
+  } catch (error) {
+    return errorRateLimits(
+      "omp",
+      error instanceof Error ? error.message : String(error),
     );
   }
 }
