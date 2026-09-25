@@ -500,7 +500,7 @@ async function startLive(
     cwd: input.cwd,
     providerSessionId: resume ?? "",
     nativeModel: native,
-    thinking: input.modelSettings?.thinking ?? "",
+    thinking: "",
     fastModeEnabled: undefined,
     fastModeRequested: undefined,
     planning: input.intent === "plan",
