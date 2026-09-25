@@ -10,5 +10,7 @@
 	<string>MonoCode opens project folders you choose, including Documents.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
 	<string>MonoCode opens project folders you choose, including Downloads.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MonoCode records your voice for dictation and transcribes it on this Mac.</string>
 </dict>
 </plist>

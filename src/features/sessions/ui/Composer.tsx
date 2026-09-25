@@ -45,6 +45,7 @@ import {
   type ExplorerFilePointerDragDetail,
 } from "../../../shared/lib/drag";
 import type { ContextUsage } from "../model/contextUsage";
+import { DictationButton } from "../../dictation/ui/DictationButton";
 import {
   loadProjectFiles,
   peekProjectFiles,
@@ -1619,6 +1620,23 @@ export function Composer({
     void attachmentsFromFiles(files).then(addAttachments);
   };
 
+  const insertDictation = (text: string) => {
+    const el = ref.current;
+    if (!el || el.disabled) return;
+    const before = el.value.slice(0, el.selectionStart);
+    const after = el.value.slice(el.selectionEnd);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    el.setRangeText(
+      `${lead}${text}${trail}`,
+      el.selectionStart,
+      el.selectionEnd,
+      "end",
+    );
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.focus();
+  };
+
   const attachFromPicker = () => {
     if (!attachmentsSupported) return;
     void pickAttachments().then((files) => {
@@ -2242,6 +2260,9 @@ export function Composer({
               </button>
             ) : null}
             <div className="flex shrink-0 items-center gap-1">
+              {compact ? null : (
+                <DictationButton disabled={disabled} onText={insertDictation} />
+              )}
               <ComposerAction
                 busy={busy}
                 disabled={disabled}

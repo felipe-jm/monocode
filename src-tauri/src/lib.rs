@@ -8,6 +8,8 @@ mod checkpoint;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+#[cfg(target_os = "macos")]
+mod dictation;
 mod external_editor;
 mod fs;
 mod gitlab;
@@ -228,6 +230,8 @@ pub fn run() {
             reminders::init(app.handle());
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
+            #[cfg(target_os = "macos")]
+            app.manage(dictation::DictationHost::default());
             #[cfg(target_os = "windows")]
             tray::install(app.handle())?;
             #[cfg(target_os = "macos")]
@@ -493,6 +497,8 @@ pub fn run() {
             quick_composer::git_popup::quick_git_complete,
             #[cfg(target_os = "macos")]
             quick_composer::git_popup::quick_composer_dismiss,
+            #[cfg(target_os = "macos")]
+            dictation::dictation_transcribe,
             window_transfer::stage_window_transfer,
             window_transfer::take_window_transfer,
             chat_background::save_chat_background,

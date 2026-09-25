@@ -324,6 +324,34 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Empty session games",
     keywords: "pacman snake arcade grid fun",
   },
+  ...(IS_MAC
+    ? [
+        {
+          id: "dictation-model",
+          section: "chat" as const,
+          label: "Dictation model",
+          keywords: "voice mic microphone speech transcribe whisper model",
+        },
+        {
+          id: "dictation-language",
+          section: "chat" as const,
+          label: "Dictation language",
+          keywords: "voice mic speech whisper language",
+        },
+        {
+          id: "dictation-glossary",
+          section: "chat" as const,
+          label: "Dictation glossary",
+          keywords: "voice mic speech whisper terms names prompt",
+        },
+        {
+          id: "dictation-corrections",
+          section: "chat" as const,
+          label: "Dictation corrections",
+          keywords: "voice mic speech whisper replace fix",
+        },
+      ]
+    : []),
   {
     id: "provider-accounts",
     section: "providers",
