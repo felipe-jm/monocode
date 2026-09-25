@@ -724,8 +724,12 @@ function AgentTranscriptComponent({
           // the last: the mark, and the clock beside it. It never moves, so a
           // turn settling does not shuffle the layout around the answer.
           const live = visible && !settled && !preparingHandoff;
-          const turnModelName =
+          const baseModelName =
             turnModel?.name ?? (live ? currentModelName : undefined);
+          const turnModelName =
+            baseModelName && userBlock?.turnEffort
+              ? `${baseModelName} (auto: ${userBlock.turnEffort})`
+              : baseModelName;
           // The fold line speaks for the main agent only. A delegated run has
           // its own row, which says who is working and how it went, so saying
           // it again here would be two lines telling the same story.

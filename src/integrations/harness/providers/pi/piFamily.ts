@@ -776,6 +776,14 @@ function handleFrame(
       }
       return;
     }
+    // Under `auto`, omp announces the level it picked before each prompt.
+    if (type === "thinking_level_changed") {
+      const level = stringField(rec, "thinkingLevel");
+      if (live.thinking === "auto" && level && level !== "auto") {
+        live.onEvent({ type: "turn.effort", level });
+      }
+      return;
+    }
     if (type === "config_update") {
       const model = asRecord(rec.model);
       const provider = stringField(model, "provider");

@@ -108,6 +108,18 @@ export function applyHarnessEvent(
       };
     case "turn.metrics":
       return mergeTurnMetrics(session, event);
+    case "turn.effort": {
+      const index = lastMatchingBlock(
+        session.blocks,
+        (block) => block.role === "user",
+      );
+      if (index < 0) return session;
+      const block = session.blocks[index];
+      if (block.turnEffort === event.level) return session;
+      const blocks = session.blocks.slice();
+      blocks[index] = { ...block, turnEffort: event.level };
+      return { ...session, blocks };
+    }
     case "tasks.updated":
       return upsertTaskList(session, event);
     case "background.updated":

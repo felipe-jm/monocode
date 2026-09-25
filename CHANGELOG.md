@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- omp offers an **Auto** thinking level, which picks the effort for each prompt. The level it chose shows next to the model name on the turn's status line, both while working and afterward, for example "Claude Opus 5.5 (auto: low) worked for 3s".
+
 ## [0.2.0] - 2026-09-25
 
 ### Added
