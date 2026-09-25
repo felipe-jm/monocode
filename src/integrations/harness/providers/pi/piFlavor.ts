@@ -12,6 +12,11 @@ export type PiFlavor = {
   label: string;
   /** Resolve the CLI binary. Swappable so tests can avoid Tauri. */
   resolveBinary: () => Promise<{ path: string }>;
+  /**
+   * `--mode` value for RPC children. omp only registers its `ask` tool in
+   * `rpc-ui`, which routes the questions through `extension_ui_request`.
+   */
+  rpcMode: "rpc" | "rpc-ui";
   /** Flag that resumes a stored session by id. */
   resumeFlag: string;
   /** Flags that strip tools, skills, and project context for one-shot jobs. */
@@ -28,6 +33,7 @@ export const PI_FLAVOR: PiFlavor = {
   id: "pi",
   label: "Pi",
   resolveBinary: resolvePiBinary,
+  rpcMode: "rpc",
   resumeFlag: "--session",
   isolateFlags: ["--no-tools", "--no-skills", "--no-context-files"],
   planTools: ["read", "grep", "find", "ls"],
@@ -38,12 +44,14 @@ export const PI_FLAVOR: PiFlavor = {
 /**
  * omp renamed two of Pi's flags: sessions resume through `--resume` (Pi uses
  * `--session`), and project context is stripped with `--no-rules` (Pi uses
- * `--no-context-files`). Verified against omp 18.0.6 `--help`.
+ * `--no-context-files`). Verified against omp 18.0.6 `--help`. `rpc-ui` keeps
+ * the plain RPC protocol and adds the `ask` tool (verified against omp 18.3.0).
  */
 export const OMP_FLAVOR: PiFlavor = {
   id: "omp",
   label: "omp",
   resolveBinary: resolveOmpBinary,
+  rpcMode: "rpc-ui",
   resumeFlag: "--resume",
   isolateFlags: ["--no-tools", "--no-skills", "--no-rules"],
   planTools: ["read", "grep", "glob", "lsp"],

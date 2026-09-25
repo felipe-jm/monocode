@@ -147,7 +147,7 @@ export function buildPiSpawnArgs(
     plan?: boolean;
   },
 ): string[] {
-  const args = ["--mode", "rpc"];
+  const args = ["--mode", flavor.rpcMode];
   if (input.isolated || input.noSession) args.push("--no-session");
   if (input.isolated || input.noExtensions) args.push("--no-extensions");
   if (input.isolated) {

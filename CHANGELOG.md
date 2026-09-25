@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- omp sessions can ask clarifying questions: MonoCode now starts omp in `rpc-ui` mode, which exposes its `ask` tool, so questions open in the form above the Composer. Choosing **Other (type your own)** opens a follow-up text prompt.
+
 ## [0.2.0] - 2026-09-25
 
 ### Added
