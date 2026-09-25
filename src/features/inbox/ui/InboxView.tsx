@@ -59,6 +59,7 @@ import {
   githubWorkItemThread,
   gitlabAttentionLabel,
   inboxItemKey,
+  inboxRepoPath,
   inboxItemRef,
   inboxItemStatus,
   inboxListIsFresh,
@@ -1700,7 +1701,7 @@ export function GithubPrActions({
     setActionError(null);
     try {
       const next = await githubPrAction(
-        item.projectPath,
+        inboxRepoPath(item),
         item.repo,
         item.number,
         action,
@@ -1716,6 +1717,7 @@ export function GithubPrActions({
         ...item,
         ...next,
         projectPath: item.projectPath,
+        repoPath: item.repoPath,
         provider: "github",
       });
     } catch (error: unknown) {
@@ -2101,7 +2103,7 @@ export function InboxDetail({
   // panel passes revision 0, so its loads ride on mount and the identity key.
   const prChecksEnabled = githubKind === "pr";
   const prChecksView = useGithubPrChecks({
-    cwd: item.projectPath || cwd,
+    cwd: inboxRepoPath(item) || cwd,
     repo: item.repo,
     number: item.number,
     enabled: prChecksEnabled,
@@ -2161,7 +2163,7 @@ export function InboxDetail({
             )
           : githubKind
             ? githubWorkItemDetails(
-                item.projectPath,
+                inboxRepoPath(item),
                 item.repo,
                 githubKind,
                 item.number,
@@ -2191,6 +2193,7 @@ export function InboxDetail({
     item.id,
     item.number,
     item.projectPath,
+    item.repoPath,
     item.repo,
     jira,
     jiraKey,
@@ -2341,7 +2344,7 @@ export function InboxDetail({
       setThread(null);
     }
     void githubWorkItemThread(
-      item.projectPath,
+      inboxRepoPath(item),
       item.repo,
       githubKind,
       item.number,
@@ -2369,6 +2372,7 @@ export function InboxDetail({
     item.id,
     item.number,
     item.projectPath,
+    item.repoPath,
     item.repo,
     jira,
     jiraKey,
@@ -2397,7 +2401,7 @@ export function InboxDetail({
       ? gitlabMrDiff(item.repo, item.number)
       : azuredevops
         ? azureDevOpsMrDiff(item.repo, item.number)
-        : githubPrDiff(item.projectPath, item.repo, item.number, {
+        : githubPrDiff(inboxRepoPath(item), item.repo, item.number, {
             fullContext: fullFile,
           });
     void pending
@@ -2424,6 +2428,7 @@ export function InboxDetail({
     isPr,
     item.number,
     item.projectPath,
+    item.repoPath,
     item.repo,
     revision,
     tab,
@@ -2494,7 +2499,7 @@ export function InboxDetail({
       }
       if (!githubKind) throw new Error("Unknown inbox item");
       await githubWorkItemComment(
-        item.projectPath,
+        inboxRepoPath(item),
         item.repo,
         githubKind,
         item.number,
@@ -2505,7 +2510,7 @@ export function InboxDetail({
       try {
         setThread(
           await githubWorkItemThread(
-            item.projectPath,
+            inboxRepoPath(item),
             item.repo,
             githubKind,
             item.number,
@@ -2888,7 +2893,7 @@ export function InboxDetail({
                 <p className="text-[13px] text-content/50">{diffError}</p>
               ) : prDiff ? (
                 <InboxPrDiff
-                  key={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
+                  key={`${inboxRepoPath(item)}:${item.number}:${revision}:${diffMode}`}
                   diff={prDiff}
                   fullFile={fullFile}
                 />
@@ -2899,6 +2904,8 @@ export function InboxDetail({
               <InboxPrChecks
                 view={prChecksView}
                 onRefresh={prChecksView.refresh}
+                // The project, not the checkout: CI repairs are tracked by the
+                // session's project (App.onRepairChecks → trackCiRepair).
                 cwd={item.projectPath || cwd}
                 repo={item.repo}
                 repair={
@@ -2907,6 +2914,12 @@ export function InboxDetail({
                   item.projectPath
                     ? {
                         number: item.number,
+                        checkout: sameProjectPath(
+                          inboxRepoPath(item),
+                          item.projectPath,
+                        )
+                          ? undefined
+                          : inboxRepoPath(item),
                         onOpenSession,
                         sessions: (repairSessions ?? []).filter(
                           (session) =>

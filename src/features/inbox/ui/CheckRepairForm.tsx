@@ -25,6 +25,8 @@ export type CheckRepair = {
   onOpenSession?: (sessionId: string) => void | Promise<void>;
   number: number;
   sessions: readonly { id: string; title: string }[];
+  /** Repository checkout inside a multi-repo project. */
+  checkout?: string;
   onStart: (
     request: CiRepairRequest,
     sessionId?: string,
@@ -134,6 +136,7 @@ export function CheckRepairForm({
           number: repair.number,
           headOid,
           evidence,
+          checkout: repair.checkout,
         }),
         sessionId || undefined,
       );
