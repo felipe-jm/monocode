@@ -1180,6 +1180,15 @@ pub async fn git_github_repositories(cwd: String) -> Result<Vec<String>, String>
         .map_err(|e| e.to_string())?
 }
 
+/// The repositories a project folder holds: the project's own path when it is
+/// inside a repository, or else every direct child with its own `.git` directory.
+#[tauri::command]
+pub async fn git_project_repositories(cwd: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || git_project_repositories_for(&cwd))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Open issues or pull requests for one GitHub repository, via `gh`.
 #[tauri::command]
 pub async fn git_github_work_items(
@@ -2487,6 +2496,33 @@ fn git_github_repo_for(root: &Path) -> Result<String, String> {
 fn git_github_repositories_for(root: &Path) -> Result<Vec<String>, String> {
     let json = gh_checked(root, &["repo", "view", "--json", "nameWithOwner,parent"])?;
     parse_github_repositories(&json)
+}
+
+/// Inside a work tree, the caller's path comes back unchanged, so callers can
+/// compare it with the project path. Linked worktrees (a `.git` file), hidden
+/// folders and symlinks are skipped: worktrees belong to their main checkout,
+/// and the rest are tool state.
+fn git_project_repositories_for(cwd: &str) -> Result<Vec<String>, String> {
+    let root = expand_home(cwd);
+    if git_is_work_tree(&root) {
+        return Ok(vec![cwd.to_string()]);
+    }
+    let mut repositories: Vec<PathBuf> = std::fs::read_dir(&root)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        // `DirEntry::file_type` does not follow symlinks.
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .map(|entry| entry.path())
+        .filter(|path| {
+            std::fs::symlink_metadata(path.join(".git")).is_ok_and(|meta| meta.is_dir())
+        })
+        .collect();
+    repositories.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(repositories
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
 }
 
 fn parse_github_repositories(json: &str) -> Result<Vec<String>, String> {
@@ -5986,6 +6022,83 @@ mod tests {
             && git(dir, &["config", "user.email", "monocode@test"])
             && git(dir, &["config", "commit.gpgsign", "false"])
             && git(dir, &["config", "core.autocrlf", "false"])
+    }
+
+    fn canonical(paths: Vec<String>) -> Vec<PathBuf> {
+        paths
+            .into_iter()
+            .map(|path| PathBuf::from(path).canonicalize().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn project_repositories_return_the_repository_containing_the_root() {
+        let dir = tmp("project-repos-single");
+        if !init_git(&dir.0, "main", None) {
+            return;
+        }
+        let src = dir.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let src = src.to_string_lossy().into_owned();
+        assert_eq!(git_project_repositories_for(&src).unwrap(), [src]);
+    }
+
+    #[test]
+    fn project_repositories_list_child_repositories_only() {
+        let dir = tmp("project-repos-children");
+        for name in ["web", "api"] {
+            let child = dir.0.join(name);
+            std::fs::create_dir_all(&child).unwrap();
+            if !init_git(&child, "main", None) {
+                return;
+            }
+        }
+        // Linked worktree: `.git` is a file.
+        let worktree = dir.0.join("api-wt-feature");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        // Hidden folder holding a repository.
+        let hidden = dir.0.join(".worktrees");
+        std::fs::create_dir_all(hidden.join(".git")).unwrap();
+        // Plain folder and plain file.
+        std::fs::create_dir_all(dir.0.join("docs")).unwrap();
+        std::fs::write(dir.0.join("notes.md"), "x\n").unwrap();
+        // Symlink to a repository is not followed.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.0.join("web"), dir.0.join("web-link")).unwrap();
+
+        assert_eq!(
+            canonical(git_project_repositories_for(&dir.0.to_string_lossy()).unwrap()),
+            [
+                dir.0.join("api").canonicalize().unwrap(),
+                dir.0.join("web").canonicalize().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_repositories_scan_children_under_a_stub_git_dir() {
+        let dir = tmp("project-repos-stub");
+        std::fs::create_dir_all(dir.0.join(".git").join("gk")).unwrap();
+        std::fs::create_dir_all(dir.0.join(".git").join("info")).unwrap();
+        let child = dir.0.join("backend");
+        std::fs::create_dir_all(&child).unwrap();
+        if !init_git(&child, "main", None) {
+            return;
+        }
+        assert_eq!(
+            canonical(git_project_repositories_for(&dir.0.to_string_lossy()).unwrap()),
+            [child.canonicalize().unwrap()]
+        );
+    }
+
+    #[test]
+    fn project_repositories_are_empty_without_repositories() {
+        let dir = tmp("project-repos-empty");
+        std::fs::create_dir_all(dir.0.join("docs")).unwrap();
+        assert!(git_project_repositories_for(&dir.0.to_string_lossy())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

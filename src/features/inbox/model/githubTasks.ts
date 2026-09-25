@@ -76,6 +76,8 @@ export type InboxProvider =
 export type InboxItem = Omit<GithubWorkItem, "kind"> & {
   kind: InboxKind;
   projectPath: string;
+  /** Local checkout the item came from; the project itself when absent. */
+  repoPath?: string;
   provider: InboxProvider;
   id?: string;
   identifier?: string;
@@ -187,6 +189,16 @@ let inboxCacheGeneration = 0;
 const inboxListInflight = new Map<string, Promise<InboxListResult>>();
 const repoByPath = new Map<string, string>();
 const repositoriesByPath = new Map<string, string[]>();
+const repositoriesByProject = new Map<string, string[]>();
+/**
+ * Last list per nested repository, reused by background polls. A folder of
+ * many repositories would otherwise spend the GitHub GraphQL quota every 30 s.
+ */
+const NESTED_REPO_POLL_MS = 5 * 60_000;
+const nestedListByKey = new Map<
+  string,
+  { items: GithubWorkItem[]; fetchedAt: number }
+>();
 const workItemByKey = new Map<string, GithubWorkItem>();
 const workItemInflight = new Map<string, Promise<GithubWorkItem>>();
 const detailsByKey = new Map<string, GithubWorkItemDetails>();
@@ -203,6 +215,8 @@ export function clearInboxCache() {
   inboxListInflight.clear();
   repoByPath.clear();
   repositoriesByPath.clear();
+  repositoriesByProject.clear();
+  nestedListByKey.clear();
   workItemByKey.clear();
   workItemInflight.clear();
   detailsByKey.clear();
@@ -293,6 +307,52 @@ export async function githubRepositories(cwd: string): Promise<string[]> {
   repositoriesByPath.set(key, repositories);
   repoByPath.set(key, repositories[0]!);
   return repositories;
+}
+
+/** Checkout the item's `gh` calls run in. */
+export function inboxRepoPath(
+  item: Pick<InboxItem, "repoPath" | "projectPath">,
+): string {
+  return item.repoPath || item.projectPath;
+}
+
+/** Git repositories a project folder holds; the folder's own repo when it is one. */
+export async function projectRepositories(
+  projectPath: string,
+  options?: { force?: boolean },
+): Promise<string[]> {
+  const key = normalizeProjectPath(projectPath);
+  const cached = options?.force ? undefined : repositoriesByProject.get(key);
+  if (cached) return cached;
+  const repositories = await invoke<string[]>("git_project_repositories", {
+    cwd: projectPath,
+  });
+  repositoriesByProject.set(key, repositories);
+  return repositories;
+}
+
+async function projectGithubRepositories(
+  projectPath: string,
+  force?: boolean,
+): Promise<{ path: string; repoPath: string; repo: string }[]> {
+  const repoPaths = await projectRepositories(projectPath, { force });
+  const settled = await Promise.allSettled(
+    repoPaths.map((repoPath) => githubRepositories(repoPath)),
+  );
+  const found = settled.flatMap((result, index) =>
+    result.status === "fulfilled"
+      ? result.value.map((repo) => ({
+          path: projectPath,
+          repoPath: repoPaths[index]!,
+          repo,
+        }))
+      : [],
+  );
+  if (found.length > 0) return found;
+  const failure = settled.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  throw failure?.reason ?? new Error("No GitHub repository in this project");
 }
 
 export function listGithubWorkItems(
@@ -654,16 +714,21 @@ export async function githubPrDiff(
 export async function listInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
-  options?: { force?: boolean },
+  /** `background`: an unattended poll, which may reuse nested repositories' lists. */
+  options?: { force?: boolean; background?: boolean },
 ): Promise<InboxListResult> {
   const key = inboxListCacheKey(projects, query);
   if (!options?.force && inboxListIsFresh(projects, query)) {
     return peekInboxList(projects, query) ?? { items: [], errors: {} };
   }
-  const pending = inboxListInflight.get(key);
+  // A background poll may reuse nested lists, so only background callers join it.
+  const inflightKey = options?.background ? `${key}|background` : key;
+  const pending =
+    inboxListInflight.get(key) ??
+    (options?.background ? inboxListInflight.get(inflightKey) : undefined);
   if (pending) return pending;
   const generation = inboxCacheGeneration;
-  const promise = fetchInboxItems(projects, query)
+  const promise = fetchInboxItems(projects, query, options)
     .then((result) => {
       if (generation === inboxCacheGeneration) {
         inboxListCache = { key, ...result, fetchedAt: Date.now() };
@@ -671,36 +736,61 @@ export async function listInboxItems(
       return result;
     })
     .finally(() => {
-      if (inboxListInflight.get(key) === promise) inboxListInflight.delete(key);
+      if (inboxListInflight.get(inflightKey) === promise) {
+        inboxListInflight.delete(inflightKey);
+      }
     });
-  inboxListInflight.set(key, promise);
+  inboxListInflight.set(inflightKey, promise);
   return promise;
 }
 
 async function fetchInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
+  options?: { force?: boolean; background?: boolean },
 ): Promise<InboxListResult> {
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
   const discovery = await Promise.allSettled(
-    unique.map((project) => githubRepositories(project.path)),
+    unique.map((project) =>
+      projectGithubRepositories(project.path, options?.force),
+    ),
   );
-  const resolved = discovery.flatMap((result, index) =>
-    result.status === "fulfilled"
-      ? result.value.map((repo) => ({ path: unique[index]!.path, repo }))
-      : [],
+  const resolved = discovery.flatMap((result) =>
+    result.status === "fulfilled" ? result.value : [],
   );
   const grouped = groupProjectsByRepo(resolved);
   const githubJobs = grouped.flatMap((project) =>
     (["issue", "pr"] as const).map(async (kind) => {
-      const items = await listGithubWorkItems(project.path, project.repo, {
-        ...query,
+      const nested = !sameProjectPath(project.repoPath, project.path);
+      const nestedKey = JSON.stringify([
+        project.repo.toLowerCase(),
         kind,
-      });
+        query.state,
+        query.assignedToMe,
+        query.search,
+      ]);
+      const reusable = nested ? nestedListByKey.get(nestedKey) : undefined;
+      let items: GithubWorkItem[];
+      if (
+        options?.background &&
+        reusable &&
+        Date.now() - reusable.fetchedAt < NESTED_REPO_POLL_MS
+      ) {
+        items = reusable.items;
+      } else {
+        items = await listGithubWorkItems(project.repoPath, project.repo, {
+          ...query,
+          kind,
+        });
+        if (nested) {
+          nestedListByKey.set(nestedKey, { items, fetchedAt: Date.now() });
+        }
+      }
       return items.map((item) => ({
         ...item,
         projectPath: project.path,
+        repoPath: project.repoPath,
         provider: "github" as const,
         repo: item.repo || project.repo,
       }));
@@ -981,20 +1071,17 @@ export function uniqueInboxProjects(
   return unique;
 }
 
-export function groupProjectsByRepo(
-  resolved: readonly { path: string; repo: string }[],
-): { path: string; repo: string }[] {
+export function groupProjectsByRepo<T extends { path: string; repo: string }>(
+  resolved: readonly T[],
+): T[] {
   const seen = new Set<string>();
-  const grouped: { path: string; repo: string }[] = [];
+  const grouped: T[] = [];
   for (const project of resolved) {
     const repo = project.repo.trim().toLowerCase();
     const key = repo || `path:${normalizeProjectPath(project.path)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    grouped.push({
-      path: project.path,
-      repo: project.repo.trim(),
-    });
+    grouped.push({ ...project, repo: project.repo.trim() });
   }
   return grouped;
 }

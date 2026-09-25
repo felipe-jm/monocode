@@ -5,7 +5,10 @@ import {
   type InboxKind,
   type InboxProvider,
 } from "./githubTasks";
-import { normalizeProjectPath } from "../../projects/model/recents";
+import {
+  normalizeProjectPath,
+  sameProjectPath,
+} from "../../projects/model/recents";
 import { timeFilterStart, type SessionTimeFilter } from "../../sessions/model/sessionFilters";
 
 export type InboxTimeFilter = SessionTimeFilter;
@@ -20,6 +23,8 @@ export type InboxStatusFilter = {
 export type InboxFilters = {
   assignedToMe: boolean;
   hiddenProjects: string[];
+  /** Lowercased GitHub `owner/name` slugs to hide. */
+  hiddenRepos: string[];
   /** Linear project ids to hide. `LINEAR_NO_PROJECT` stands for issues outside every project. */
   hiddenLinearProjects: string[];
   hiddenKinds: InboxKind[];
@@ -48,6 +53,7 @@ export const DEFAULT_INBOX_STATUS_FILTER: InboxStatusFilter = {
 export const DEFAULT_INBOX_FILTERS: InboxFilters = {
   assignedToMe: false,
   hiddenProjects: [],
+  hiddenRepos: [],
   hiddenLinearProjects: [],
   hiddenKinds: [],
   time: "all",
@@ -190,6 +196,14 @@ export function loadInboxFilters(): InboxFilters {
               typeof path === "string" && path.length > 0,
           )
         : [],
+      hiddenRepos: Array.isArray(parsed.hiddenRepos)
+        ? parsed.hiddenRepos
+            .filter(
+              (repo): repo is string =>
+                typeof repo === "string" && repo.length > 0,
+            )
+            .map((repo) => repo.toLowerCase())
+        : [],
       hiddenLinearProjects: Array.isArray(parsed.hiddenLinearProjects)
         ? parsed.hiddenLinearProjects.filter(
             (id): id is string => typeof id === "string" && id.length > 0,
@@ -249,6 +263,8 @@ export function hasActiveInboxFilters(
       filters.status.merged;
   return (
     filters.assignedToMe ||
+    ((source === undefined || source === "github") &&
+      filters.hiddenRepos.length > 0) ||
     (source === "linear" && hiddenLinearTeamIds.length > 0) ||
     (source === "jira" && hiddenJiraProjectIds.length > 0) ||
     (source === "linear"
@@ -280,6 +296,52 @@ export function filterInboxByProject(
     if (!path) return true;
     return !hidden.has(path);
   });
+}
+
+/**
+ * Only items with a repository row in the filter menu can be hidden, so a
+ * repository opened as its own project is never hidden without a way back.
+ */
+export function filterInboxByRepo(
+  items: readonly InboxItem[],
+  hiddenRepos: Iterable<string>,
+): InboxItem[] {
+  const hidden = new Set([...hiddenRepos].map((repo) => repo.toLowerCase()));
+  if (hidden.size === 0) return [...items];
+  return items.filter(
+    (item) =>
+      item.provider !== "github" ||
+      !item.repoPath ||
+      sameProjectPath(item.repoPath, item.projectPath) ||
+      !hidden.has(item.repo.toLowerCase()),
+  );
+}
+
+/**
+ * Repositories to list under each project that holds several, derived from
+ * the fetched items. A single-repo project gets no entry.
+ */
+export function inboxRepoOptions(
+  items: readonly InboxItem[],
+): Map<string, string[]> {
+  const byProject = new Map<string, Map<string, string>>();
+  for (const item of items) {
+    if (item.provider !== "github" || !item.projectPath || !item.repoPath) continue;
+    if (sameProjectPath(item.repoPath, item.projectPath)) continue;
+    const project = normalizeProjectPath(item.projectPath);
+    const repos = byProject.get(project) ?? new Map<string, string>();
+    const key = item.repo.toLowerCase();
+    if (!repos.has(key)) repos.set(key, item.repo);
+    byProject.set(project, repos);
+  }
+  return new Map(
+    [...byProject].map(([project, repos]) => [
+      project,
+      [...repos.values()].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base" }),
+      ),
+    ]),
+  );
 }
 
 /**
@@ -385,7 +447,10 @@ export function applyInboxFilters(
       filterInboxByTime(
         filterInboxByKind(
           filterInboxByLinearProject(
-            filterInboxByProject(scoped, hiddenProjects),
+            filterInboxByRepo(
+              filterInboxByProject(scoped, hiddenProjects),
+              isTrackerSource(source) ? [] : filters.hiddenRepos,
+            ),
             filters.hiddenLinearProjects,
           ),
           hiddenKinds,

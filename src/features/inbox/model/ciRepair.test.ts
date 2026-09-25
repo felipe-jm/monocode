@@ -151,3 +151,35 @@ it("keeps escaped check names within the CI prompt budget", () => {
   expect(request.prompt.length).toBeLessThanOrEqual(12_000);
   expect(request.target.checks).toHaveLength(20);
 });
+
+it("names the checkout when the PR's repository sits inside the project", () => {
+  const evidence = [
+    {
+      name: "test",
+      workflow: "CI",
+      state: "fail" as const,
+      url: "https://github.com/acme/web/actions/runs/1/job/2",
+      startedAt: null,
+      completedAt: null,
+    },
+  ];
+
+  const nested = buildCiRepairRequest({
+    repo: "acme/web",
+    number: 42,
+    headOid: "abc123",
+    evidence,
+    checkout: "/work/lr/web",
+  });
+  const plain = buildCiRepairRequest({
+    repo: "acme/web",
+    number: 42,
+    headOid: "abc123",
+    evidence,
+  });
+
+  expect(nested.prompt).toContain(
+    "The repository checkout for this PR is at /work/lr/web.",
+  );
+  expect(plain.prompt).not.toContain("repository checkout for this PR");
+});

@@ -1,5 +1,5 @@
 import { Check, CircleDot, GitPullRequest } from "../../../shared/ui/icons";
-import { type ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type { InboxKind } from "../model/githubTasks";
 import {
   DEFAULT_INBOX_FILTERS,
@@ -14,6 +14,7 @@ import type { JiraProject } from "../model/jira";
 import type { LinearTeam } from "../model/linear";
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
+import { normalizeProjectPath } from "../../projects/model/recents";
 
 export const INBOX_FILTER_MENU_WIDTH = 228;
 
@@ -27,6 +28,8 @@ type Props = {
   x: number;
   y: number;
   projects: ProjectOption[];
+  /** Repositories under each multi-repo project, keyed by normalized project path. */
+  reposByProject: ReadonlyMap<string, readonly string[]>;
   linearProjects: LinearProjectOption[];
   linearTeams: LinearTeam[];
   hiddenLinearTeamIds: string[];
@@ -70,6 +73,7 @@ export function InboxFiltersMenu({
   x,
   y,
   projects,
+  reposByProject,
   linearProjects,
   linearTeams,
   hiddenLinearTeamIds,
@@ -108,6 +112,15 @@ export function InboxFiltersMenu({
     if (next.has(path)) next.delete(path);
     else next.add(path);
     onChange({ ...filters, hiddenProjects: [...next] });
+  };
+
+  const hiddenRepos = new Set(filters.hiddenRepos);
+  const toggleRepo = (repo: string) => {
+    const key = repo.toLowerCase();
+    const next = new Set(hiddenRepos);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onChange({ ...filters, hiddenRepos: [...next] });
   };
 
   const toggleLinearTeam = (id: string) => {
@@ -269,23 +282,40 @@ export function InboxFiltersMenu({
       projects.length > 0 ? (
         <>
           <SectionLabel>Projects</SectionLabel>
-          {projects.map((project) => (
-            <FilterItem
-              key={project.path}
-              label={project.name}
-              checked={!hiddenProjects.has(project.path)}
-              icon={
-                project.logoPath ? (
-                  <ProjectLogoIcon
-                    path={project.logoPath}
-                    className="size-3.5 shrink-0 rounded-sm"
-                    imageClassName="size-3.5"
+          {projects.map((project) => {
+            const hidden = hiddenProjects.has(project.path);
+            const repos =
+              source === "github" && !hidden
+                ? (reposByProject.get(normalizeProjectPath(project.path)) ?? [])
+                : [];
+            return (
+              <Fragment key={project.path}>
+                <FilterItem
+                  label={project.name}
+                  checked={!hidden}
+                  icon={
+                    project.logoPath ? (
+                      <ProjectLogoIcon
+                        path={project.logoPath}
+                        className="size-3.5 shrink-0 rounded-sm"
+                        imageClassName="size-3.5"
+                      />
+                    ) : undefined
+                  }
+                  onClick={() => toggleProject(project.path)}
+                />
+                {repos.map((repo) => (
+                  <FilterItem
+                    key={repo}
+                    label={repo}
+                    inset
+                    checked={!hiddenRepos.has(repo.toLowerCase())}
+                    onClick={() => toggleRepo(repo)}
                   />
-                ) : undefined
-              }
-              onClick={() => toggleProject(project.path)}
-            />
-          ))}
+                ))}
+              </Fragment>
+            );
+          })}
         </>
       ) : null}
 
@@ -328,11 +358,13 @@ function FilterItem({
   label,
   checked,
   icon,
+  inset = false,
   onClick,
 }: {
   label: string;
   checked: boolean;
   icon?: ReactNode;
+  inset?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -342,7 +374,7 @@ function FilterItem({
       aria-checked={checked}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
-      className="flex h-7 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] leading-none text-content hover:bg-content/5"
+      className={`flex h-7 w-full items-center gap-2 rounded-lg ${inset ? "pl-7 pr-2" : "px-2"} text-left text-[13px] leading-none text-content hover:bg-content/5`}
     >
       {icon}
       <span className="min-w-0 flex-1 truncate">{label}</span>

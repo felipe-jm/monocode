@@ -506,12 +506,16 @@ export function InboxPrChecks({
   view,
   onRefresh,
   cwd = "",
+  checkout,
   repo = "",
   repair,
 }: {
   view: GithubPrChecksView;
   onRefresh: () => void;
+  /** Project path; keys CI-repair tracking. */
   cwd?: string;
+  /** Local checkout for reading annotated sources; defaults to `cwd`. */
+  checkout?: string;
   repo?: string;
   repair?: CheckRepair;
 }) {
@@ -801,7 +805,7 @@ export function InboxPrChecks({
                       }
                       fixDisabled={refreshing || stale || Boolean(error)}
                       fixAnchor={selection?.anchor}
-                      cwd={cwd}
+                      cwd={checkout || cwd}
                       repo={repo}
                       headOid={checks?.headOid ?? ""}
                       autoExpand={

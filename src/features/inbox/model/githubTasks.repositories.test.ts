@@ -7,8 +7,10 @@ import {
   githubWorkItemComment,
   githubWorkItemDetails,
   githubWorkItemThread,
+  inboxRepoPath,
   listInboxItems,
   peekGithubWorkItemDetails,
+  projectRepositories,
   type GithubWorkItem,
 } from "./githubTasks";
 
@@ -56,6 +58,9 @@ describe("GitHub fork repositories", () => {
   it("fetches a shared parent once and keeps the preferred local checkout", async () => {
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       const input = args as Record<string, unknown> | undefined;
+      if (command === "git_project_repositories") {
+        return [String((args as { cwd: string }).cwd)] as never;
+      }
       if (command === "git_github_repositories") {
         return (
           input?.cwd === "/tmp/fork-a"
@@ -107,7 +112,10 @@ describe("GitHub fork repositories", () => {
   });
 
   it("reports an error when repository discovery fails", async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "git_project_repositories") {
+        return [String((args as { cwd: string }).cwd)] as never;
+      }
       if (command === "git_github_repositories") {
         throw new Error("not a GitHub repository");
       }
@@ -206,5 +214,235 @@ describe("repository-qualified GitHub item operations", () => {
       body: "Looks good",
       inReplyTo: "",
     });
+  });
+});
+
+describe("projects holding several repositories", () => {
+  function mockProject(
+    repositoriesByProject: Record<string, string[]>,
+    slugsByRepo: Record<string, string[] | Error>,
+  ) {
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const input = args as Record<string, unknown>;
+      if (command === "git_project_repositories") {
+        return (repositoriesByProject[String(input.cwd)] ?? []) as never;
+      }
+      if (command === "git_github_repositories") {
+        const slugs = slugsByRepo[String(input.cwd)];
+        if (!slugs || slugs instanceof Error) {
+          throw slugs ?? new Error("not a GitHub repository");
+        }
+        return slugs as never;
+      }
+      if (command === "git_github_work_items") {
+        return (
+          input.kind === "pr" ? [workItem(String(input.repo), "pr")] : []
+        ) as never;
+      }
+      if (
+        command === "linear_status" ||
+        command === "jira_status" ||
+        command === "gitlab_status" ||
+        command === "azure_devops_status"
+      ) {
+        return { connected: false } as never;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+  }
+
+  const query = { assignedToMe: false, state: "open" as const, search: "" };
+
+  it("tags items with the project and the checkout they came from", async () => {
+    mockProject(
+      { "/work/lr": ["/work/lr/api", "/work/lr/web"] },
+      { "/work/lr/api": ["lr/api"], "/work/lr/web": ["lr/web"] },
+    );
+
+    const result = await listInboxItems([{ path: "/work/lr" }], query);
+
+    expect(
+      result.items
+        .map(({ repo, projectPath, repoPath }) => ({ repo, projectPath, repoPath }))
+        .sort((a, b) => a.repo.localeCompare(b.repo)),
+    ).toEqual([
+      { repo: "lr/api", projectPath: "/work/lr", repoPath: "/work/lr/api" },
+      { repo: "lr/web", projectPath: "/work/lr", repoPath: "/work/lr/web" },
+    ]);
+    expect(invoke).toHaveBeenCalledWith(
+      "git_github_work_items",
+      expect.objectContaining({ cwd: "/work/lr/api", repo: "lr/api" }),
+    );
+    expect(result.errors).toEqual({});
+  });
+
+  it("keeps the other repositories when one has no GitHub remote", async () => {
+    mockProject(
+      { "/work/lr": ["/work/lr/api", "/work/lr/local-only"] },
+      {
+        "/work/lr/api": ["lr/api"],
+        "/work/lr/local-only": new Error("no GitHub remote"),
+      },
+    );
+
+    const result = await listInboxItems([{ path: "/work/lr" }], query);
+
+    expect(result.items.map((item) => item.repo)).toEqual(["lr/api"]);
+    expect(result.errors).toEqual({});
+  });
+
+  it("reports an error when a project has no GitHub repository", async () => {
+    mockProject({ "/work/empty": [] }, {});
+
+    await expect(
+      listInboxItems([{ path: "/work/empty" }], query),
+    ).resolves.toEqual({
+      items: [],
+      errors: { github: "No GitHub repository in this project" },
+    });
+  });
+
+  it("fetches a repository shared by two projects once", async () => {
+    mockProject(
+      {
+        "/work/lr": ["/work/lr/api", "/work/lr/web"],
+        "/work/lr/api": ["/work/lr/api"],
+      },
+      { "/work/lr/api": ["lr/api"], "/work/lr/web": ["lr/web"] },
+    );
+
+    const result = await listInboxItems(
+      [{ path: "/work/lr" }, { path: "/work/lr/api" }],
+      query,
+    );
+
+    const apiCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([command, args]) =>
+          command === "git_github_work_items" &&
+          (args as Record<string, unknown>).repo === "lr/api",
+      );
+    expect(apiCalls).toHaveLength(2); // issue + pr, once
+    expect(
+      result.items.find((item) => item.repo === "lr/api")?.projectPath,
+    ).toBe("/work/lr");
+  });
+
+  it("rediscovers repositories after the Inbox cache is cleared", async () => {
+    mockProject({ "/work/lr": ["/work/lr/api"] }, { "/work/lr/api": ["lr/api"] });
+    await projectRepositories("/work/lr");
+    await projectRepositories("/work/lr/");
+    clearInboxCache();
+    await projectRepositories("/work/lr");
+
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "git_project_repositories"),
+    ).toHaveLength(2);
+  });
+
+  it("rediscovers repositories on a forced refresh and keeps the slug cache", async () => {
+    const slugs = { "/work/lr/api": ["lr/api"], "/work/lr/web": ["lr/web"] };
+    mockProject({ "/work/lr": ["/work/lr/api"] }, slugs);
+    const first = await listInboxItems([{ path: "/work/lr" }], query);
+    expect(first.items.map((item) => item.repo)).toEqual(["lr/api"]);
+
+    mockProject({ "/work/lr": ["/work/lr/api", "/work/lr/web"] }, slugs);
+    const refreshed = await listInboxItems([{ path: "/work/lr" }], query, {
+      force: true,
+    });
+
+    expect(refreshed.items.map((item) => item.repo).sort()).toEqual([
+      "lr/api",
+      "lr/web",
+    ]);
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          ([command, args]) =>
+            command === "git_github_repositories" &&
+            (args as Record<string, unknown>).cwd === "/work/lr/api",
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("reuses nested repositories' lists on background polls for five minutes", async () => {
+    mockProject(
+      {
+        "/work/lr": ["/work/lr/api"],
+        "/work/solo": ["/work/solo"],
+      },
+      { "/work/lr/api": ["lr/api"], "/work/solo": ["acme/solo"] },
+    );
+    const projects = [{ path: "/work/lr" }, { path: "/work/solo" }];
+    const listCalls = (repo: string) =>
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          ([command, args]) =>
+            command === "git_github_work_items" &&
+            (args as Record<string, unknown>).repo === repo,
+        ).length;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      await listInboxItems(projects, query, { force: true, background: true });
+      now.mockReturnValue(1_000_000 + 60_000);
+      const polled = await listInboxItems(projects, query, {
+        force: true,
+        background: true,
+      });
+
+      // Nested repository reused; single-repo project refetched as before.
+      expect(listCalls("lr/api")).toBe(2);
+      expect(listCalls("acme/solo")).toBe(4);
+      expect(polled.items.map((item) => item.repo).sort()).toEqual([
+        "acme/solo",
+        "lr/api",
+      ]);
+
+      await listInboxItems(projects, query, { force: true });
+      expect(listCalls("lr/api")).toBe(4);
+
+      now.mockReturnValue(1_000_000 + 60_000 + 5 * 60_000);
+      await listInboxItems(projects, query, { force: true, background: true });
+      expect(listCalls("lr/api")).toBe(6);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("does not let a user refresh join a background poll in flight", async () => {
+    mockProject({ "/work/lr": ["/work/lr/api"] }, { "/work/lr/api": ["lr/api"] });
+    const projects = [{ path: "/work/lr" }];
+    await listInboxItems(projects, query, { force: true, background: true });
+
+    const polling = listInboxItems(projects, query, {
+      force: true,
+      background: true,
+    });
+    const refreshed = listInboxItems(projects, query, { force: true });
+    await Promise.all([polling, refreshed]);
+
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          ([command, args]) =>
+            command === "git_github_work_items" &&
+            (args as Record<string, unknown>).repo === "lr/api",
+        ),
+    ).toHaveLength(4);
+  });
+});
+
+describe("inboxRepoPath", () => {
+  it("falls back to the project for items without a checkout", () => {
+    expect(inboxRepoPath({ projectPath: "/work/web" })).toBe("/work/web");
+    expect(
+      inboxRepoPath({ projectPath: "/work/lr", repoPath: "/work/lr/api" }),
+    ).toBe("/work/lr/api");
   });
 });
