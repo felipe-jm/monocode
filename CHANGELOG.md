@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Inbox lists issues and pull requests from every git repository inside a project folder, not only from a folder that is itself a repository. Linked worktrees and hidden folders are skipped. In the filter menu, a project holding several repositories lists them so each can be hidden. PR details, diffs, checks, and actions run in the repository's own checkout, and Fix CI tells the agent where that checkout is.
+
 ## [0.2.0] - 2026-09-25
 
 ### Added

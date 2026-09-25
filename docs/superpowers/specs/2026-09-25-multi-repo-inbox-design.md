@@ -48,8 +48,9 @@ Unchanged assumptions:
 New Tauri command in `src-tauri/src/fs.rs`, next to
 `git_github_repositories_for`, registered in `lib.rs`.
 
-1. If `root` is inside a git work tree (`git rev-parse --show-toplevel`
-   succeeds), return `[toplevel]`. Single-repo projects keep today's behavior.
+1. If `root` is inside a git work tree (`git rev-parse --is-inside-work-tree`
+   succeeds), return `[root]` with the caller's path string unchanged, so it
+   equals the project path. Single-repo projects keep today's behavior.
 2. Otherwise, scan the **direct children** of `root` and include every child
    whose `.git` entry is a **directory**. Excluded:
    - children whose `.git` is a file (linked worktrees, e.g. `backend-wt-*`);
@@ -67,8 +68,10 @@ A root `.git` that is not a valid repository (the GitKraken stub holding only
 
 In `src/features/inbox/model/githubTasks.ts`: wraps the command and caches
 results per normalized project path for the app session, like
-`repositoriesByPath`. `clearInboxCache` (Inbox refresh) also clears this cache,
-so a newly cloned repository appears on the next refresh.
+`repositoriesByPath`. A forced `listInboxItems` (the Inbox refresh button and
+the background poll) re-runs discovery, and `clearInboxCache` clears it, so a
+newly cloned repository appears on the next refresh. The `gh` slug cache per
+checkout is kept on forced fetches.
 
 ### GitHub slug resolution
 
@@ -82,20 +85,24 @@ without affecting the others.
 
 ### Data model
 
-`InboxItem` gains `repoPath: string`: the local checkout the item came from.
+`InboxItem` gains an optional `repoPath`: the local checkout the item came
+from. `inboxRepoPath(item)` returns `repoPath || projectPath`, so Linear,
+Jira, GitLab, Azure DevOps, and cached items need no change.
 
 | Field | Role | Consumers |
 |---|---|---|
 | `projectPath` (existing) | project identity | logo, color, notifications, project filter, dedupe rank, cwd of sessions created from the item |
 | `repoPath` (new) | checkout | cwd of every follow-up `gh` call: details, thread, comment, PR diff, PR actions, PR checks, check details |
 
-For single-repo projects `repoPath === projectPath`. GitLab and Azure DevOps
-items set `repoPath = projectPath` (empty when `projectPath` is empty); their
-behavior is otherwise unchanged. Linear and Jira items set `repoPath = ""`.
+For single-repo projects `repoPath === projectPath`. GitLab, Azure DevOps,
+Linear, and Jira items leave `repoPath` unset; `inboxRepoPath` falls back to
+`projectPath`, so their behavior is unchanged.
 
-Every call site that today passes `item.projectPath` as a `gh` cwd switches to
-`item.repoPath` (InboxView detail, thread, comment, diff, PR action, checks,
-check details, repair evidence). Session cwd call sites keep `projectPath`.
+Every call site that passes `item.projectPath` as a `gh` cwd switches to
+`inboxRepoPath(item)` (details, thread, comment, diff, PR action, PR checks
+list). `InboxPrChecks` keeps `projectPath` as its `cwd` because it also keys
+CI-repair tracking (`trackCiRepair`); its check-details calls go through
+`gh api` and do not depend on cwd. Session cwd call sites keep `projectPath`.
 
 ### Fetching
 
