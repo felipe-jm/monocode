@@ -690,6 +690,17 @@ export function subscribeNotesEnabled(onStoreChange: () => void) {
     window.removeEventListener(NOTES_ENABLED_CHANGE_EVENT, onStoreChange);
 }
 
+const AUTO_TITLES_KEY = "monocode.autoTitles";
+export const AUTO_TITLES_DEFAULT = true;
+
+export function loadAutoTitles(): boolean {
+  return readFlag(AUTO_TITLES_KEY) ?? AUTO_TITLES_DEFAULT;
+}
+
+export function saveAutoTitles(value: boolean) {
+  writeFlag(AUTO_TITLES_KEY, value);
+}
+
 const QUICK_COMPOSER_ENABLED_KEY = "monocode.quickComposerEnabled";
 const QUICK_COMPOSER_SHORTCUT_KEY = "monocode.quickComposerShortcut";
 

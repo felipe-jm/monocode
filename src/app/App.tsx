@@ -555,6 +555,7 @@ import {
   peekAzureDevOpsWorkItemDetails,
 } from "../features/inbox/model/azureDevOps";
 import {
+  loadAutoTitles,
   loadCloseToTray,
   loadCollapsedProjectRailMode,
   loadFileTabMode,
@@ -4061,7 +4062,7 @@ export default function App({
       );
       if (open) {
         const title = formatSessionTitle(open.harness, trimmed);
-        const updated = { ...open, title };
+        const updated = { ...open, title, titleSource: "user" as const };
         setSessions((prev) =>
           prev.map((session) => (session.id === sessionId ? updated : session)),
         );
@@ -4076,6 +4077,7 @@ export default function App({
         const updated = {
           ...restored,
           title: formatSessionTitle(restored.harness, trimmed),
+          titleSource: "user" as const,
         };
         const saved = await upsertSession(updated).catch(() => null);
         if (saved) {
@@ -6167,6 +6169,7 @@ export default function App({
       const launchTitleGeneration = (workCwd: string) => {
         if (
           !live ||
+          !loadAutoTitles() ||
           !shouldGenerateSessionTitle(
             isFirstTurn,
             placeholderTitle,
@@ -6203,6 +6206,7 @@ export default function App({
                 let next = s;
                 if (
                   generated &&
+                  s.titleSource !== "user" &&
                   (options?.refreshTitle ||
                     canReplaceSessionTitle(s.title, s.harness, titleSeed))
                 ) {
@@ -8019,6 +8023,7 @@ export default function App({
           harness,
           display === "New session" ? HANDOFF_TITLE : display,
         ),
+        titleSource: source.titleSource,
         handoffCard: buildHandoffComposerCard({
           from,
           to: harness,

@@ -392,6 +392,8 @@ export type Session = {
   modelSettings: Record<string, string>;
   runtimeMode: RuntimeMode;
   title: string;
+  /** "user" once the user renamed the session; automatic titles never replace it. */
+  titleSource?: "user";
   /** Project / working directory for this session. */
   cwd: string;
   blocks: Block[];

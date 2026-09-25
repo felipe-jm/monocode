@@ -88,6 +88,13 @@ describe.each([
     undefined,
   ],
   [
+    "monocode.autoTitles",
+    settings.loadAutoTitles,
+    settings.saveAutoTitles,
+    true,
+    undefined,
+  ],
+  [
     "monocode.bodyGlass",
     appearance.loadBodyGlass,
     appearance.saveBodyGlass,

@@ -1,5 +1,5 @@
 import { appendUser } from "../../../integrations/harness/core/apply";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   newSession,
   type Block,
@@ -7,10 +7,14 @@ import {
   type Session,
 } from "../model/session";
 import {
+  getSession,
   isPersistableId,
   persistFingerprint,
   sanitizeSessionForPersist,
 } from "./sessionStore";
+
+const invoke = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 describe("isPersistableId", () => {
   it("accepts alphanumeric ids with hyphens and underscores", () => {
@@ -288,6 +292,14 @@ describe("sanitizeSessionForPersist", () => {
     expect(sanitizeSessionForPersist(session).automationId).toBe(
       "automation-1",
     );
+  });
+
+  it("persists a user-set title source and omits an automatic one", () => {
+    const session = newSession("codex", "/tmp/project");
+    session.blocks = [{ id: "u1", role: "user", text: "review PRs" }];
+    expect(sanitizeSessionForPersist(session).titleSource).toBeUndefined();
+    session.titleSource = "user";
+    expect(sanitizeSessionForPersist(session).titleSource).toBe("user");
   });
 
   it("omits a path-like provider session id so upsert can still snapshot git", () => {
@@ -640,6 +652,32 @@ describe("persistFingerprint", () => {
     expect(
       persistFingerprint({ ...session, context: { used: 10, window: 0 } }),
     ).toBe(persistFingerprint({ ...session, context: { used: 10 } }));
+  });
+});
+
+describe("getSession", () => {
+  const record = (titleSource?: "user" | null) => ({
+    id: "s1",
+    cwd: "/tmp/project",
+    harness: "codex",
+    model: "",
+    modelSettings: {},
+    runtimeMode: "default",
+    title: "Renamed",
+    blocks: [{ id: "u1", role: "user", text: "hi" }],
+    createdAt: 1,
+    updatedAt: 1,
+    ...(titleSource !== undefined ? { titleSource } : {}),
+  });
+
+  it.each([
+    ["user", "user"],
+    [undefined, undefined],
+    [null, undefined],
+  ] as const)("loads title source %s as %s", async (stored, expected) => {
+    invoke.mockResolvedValueOnce(record(stored));
+    const session = await getSession("s1");
+    expect(session?.titleSource).toBe(expected);
   });
 });
 it("saves the exact CI context alongside the compact user message", () => {

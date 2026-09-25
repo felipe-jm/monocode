@@ -71,6 +71,7 @@ type SessionRecord = {
   modelSettings: Record<string, string>;
   runtimeMode: string;
   title: string;
+  titleSource?: "user" | null;
   providerSessionId?: string | null;
   providerAccountId?: string | null;
   blocks: Block[];
@@ -93,6 +94,7 @@ type SessionUpsertPayload = {
   modelSettings: Record<string, string>;
   runtimeMode: string;
   title: string;
+  titleSource?: "user" | null;
   providerSessionId?: string;
   providerAccountId?: string;
   blocks: Block[];
@@ -131,6 +133,7 @@ function persistableMeta(
     modelSettings: session.modelSettings,
     runtimeMode: session.runtimeMode,
     title: session.title,
+    ...(session.titleSource === "user" ? { titleSource: "user" as const } : {}),
     ...(session.providerSessionId && isPersistableId(session.providerSessionId)
       ? { providerSessionId: session.providerSessionId }
       : {}),
@@ -950,6 +953,7 @@ function recordToSession(record: SessionRecord): Session {
         : {},
     runtimeMode: asRuntimeMode(record.runtimeMode),
     title: record.title,
+    ...(record.titleSource === "user" ? { titleSource: "user" as const } : {}),
     blocks,
     busy: false,
     orchestrationLeadId:
