@@ -154,8 +154,15 @@ it("keeps escaped check names within the CI prompt budget", () => {
 
 it("names the checkout when the PR's repository sits inside the project", () => {
   const evidence = [
-    { name: "test", workflow: "CI", url: "https://github.com/acme/web/actions/runs/1/job/2", state: "FAILURE" },
-  ] as Parameters<typeof buildCiRepairRequest>[0]["evidence"];
+    {
+      name: "test",
+      workflow: "CI",
+      state: "fail" as const,
+      url: "https://github.com/acme/web/actions/runs/1/job/2",
+      startedAt: null,
+      completedAt: null,
+    },
+  ];
 
   const nested = buildCiRepairRequest({
     repo: "acme/web",

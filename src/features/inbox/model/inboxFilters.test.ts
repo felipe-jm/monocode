@@ -753,6 +753,13 @@ describe("repository filter", () => {
     );
   });
 
+  it("keeps a repository opened as its own project visible", () => {
+    const own = repoItem("lr/api", 4, "/work/lr/api", "/work/lr/api");
+    expect(filterInboxByRepo([own], ["lr/api"]).map((row) => row.number)).toEqual(
+      [4],
+    );
+  });
+
   it("hides a project's repositories with the project", () => {
     expect(
       applyInboxFilters(

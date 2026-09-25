@@ -2910,6 +2910,7 @@ export function InboxDetail({
                 // The project, not the checkout: CI repairs are tracked by the
                 // session's project (App.onRepairChecks → trackCiRepair).
                 cwd={item.projectPath || cwd}
+                checkout={inboxRepoPath(item) || cwd}
                 repo={item.repo}
                 repair={
                   onRepairChecks &&

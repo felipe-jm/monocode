@@ -225,7 +225,10 @@ export function useInboxActivity(
         jiraHiddenProjectIds: loadHiddenJiraProjectIds(),
       };
       try {
-        const listed = await listInboxItems(projects, query, { force });
+        const listed = await listInboxItems(projects, query, {
+          force,
+          background: true,
+        });
         if (cancelled) return;
         const visible = applyInboxFilters(listed.items, filters, "");
         rememberNotificationProjects(

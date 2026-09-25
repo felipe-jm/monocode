@@ -298,6 +298,10 @@ export function filterInboxByProject(
   });
 }
 
+/**
+ * Only items with a repository row in the filter menu can be hidden, so a
+ * repository opened as its own project is never hidden without a way back.
+ */
 export function filterInboxByRepo(
   items: readonly InboxItem[],
   hiddenRepos: Iterable<string>,
@@ -305,7 +309,11 @@ export function filterInboxByRepo(
   const hidden = new Set([...hiddenRepos].map((repo) => repo.toLowerCase()));
   if (hidden.size === 0) return [...items];
   return items.filter(
-    (item) => item.provider !== "github" || !hidden.has(item.repo.toLowerCase()),
+    (item) =>
+      item.provider !== "github" ||
+      !item.repoPath ||
+      sameProjectPath(item.repoPath, item.projectPath) ||
+      !hidden.has(item.repo.toLowerCase()),
   );
 }
 

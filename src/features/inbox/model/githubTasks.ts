@@ -190,6 +190,15 @@ const inboxListInflight = new Map<string, Promise<InboxListResult>>();
 const repoByPath = new Map<string, string>();
 const repositoriesByPath = new Map<string, string[]>();
 const repositoriesByProject = new Map<string, string[]>();
+/**
+ * Last list per nested repository, reused by background polls. A folder of
+ * many repositories would otherwise spend the GitHub GraphQL quota every 30 s.
+ */
+const NESTED_REPO_POLL_MS = 5 * 60_000;
+const nestedListByKey = new Map<
+  string,
+  { items: GithubWorkItem[]; fetchedAt: number }
+>();
 const workItemByKey = new Map<string, GithubWorkItem>();
 const workItemInflight = new Map<string, Promise<GithubWorkItem>>();
 const detailsByKey = new Map<string, GithubWorkItemDetails>();
@@ -207,6 +216,7 @@ export function clearInboxCache() {
   repoByPath.clear();
   repositoriesByPath.clear();
   repositoriesByProject.clear();
+  nestedListByKey.clear();
   workItemByKey.clear();
   workItemInflight.clear();
   detailsByKey.clear();
@@ -704,7 +714,8 @@ export async function githubPrDiff(
 export async function listInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
-  options?: { force?: boolean },
+  /** `background`: an unattended poll, which may reuse nested repositories' lists. */
+  options?: { force?: boolean; background?: boolean },
 ): Promise<InboxListResult> {
   const key = inboxListCacheKey(projects, query);
   if (!options?.force && inboxListIsFresh(projects, query)) {
@@ -713,7 +724,7 @@ export async function listInboxItems(
   const pending = inboxListInflight.get(key);
   if (pending) return pending;
   const generation = inboxCacheGeneration;
-  const promise = fetchInboxItems(projects, query, options?.force)
+  const promise = fetchInboxItems(projects, query, options)
     .then((result) => {
       if (generation === inboxCacheGeneration) {
         inboxListCache = { key, ...result, fetchedAt: Date.now() };
@@ -730,12 +741,14 @@ export async function listInboxItems(
 async function fetchInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
-  force?: boolean,
+  options?: { force?: boolean; background?: boolean },
 ): Promise<InboxListResult> {
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
   const discovery = await Promise.allSettled(
-    unique.map((project) => projectGithubRepositories(project.path, force)),
+    unique.map((project) =>
+      projectGithubRepositories(project.path, options?.force),
+    ),
   );
   const resolved = discovery.flatMap((result) =>
     result.status === "fulfilled" ? result.value : [],
@@ -743,10 +756,31 @@ async function fetchInboxItems(
   const grouped = groupProjectsByRepo(resolved);
   const githubJobs = grouped.flatMap((project) =>
     (["issue", "pr"] as const).map(async (kind) => {
-      const items = await listGithubWorkItems(project.repoPath, project.repo, {
-        ...query,
+      const nested = !sameProjectPath(project.repoPath, project.path);
+      const nestedKey = JSON.stringify([
+        project.repo.toLowerCase(),
         kind,
-      });
+        query.state,
+        query.assignedToMe,
+        query.search,
+      ]);
+      const reusable = nested ? nestedListByKey.get(nestedKey) : undefined;
+      let items: GithubWorkItem[];
+      if (
+        options?.background &&
+        reusable &&
+        Date.now() - reusable.fetchedAt < NESTED_REPO_POLL_MS
+      ) {
+        items = reusable.items;
+      } else {
+        items = await listGithubWorkItems(project.repoPath, project.repo, {
+          ...query,
+          kind,
+        });
+        if (nested) {
+          nestedListByKey.set(nestedKey, { items, fetchedAt: Date.now() });
+        }
+      }
       return items.map((item) => ({
         ...item,
         projectPath: project.path,

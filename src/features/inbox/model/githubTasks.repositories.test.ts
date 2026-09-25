@@ -368,6 +368,51 @@ describe("projects holding several repositories", () => {
         ),
     ).toHaveLength(1);
   });
+
+  it("reuses nested repositories' lists on background polls for five minutes", async () => {
+    mockProject(
+      {
+        "/work/lr": ["/work/lr/api"],
+        "/work/solo": ["/work/solo"],
+      },
+      { "/work/lr/api": ["lr/api"], "/work/solo": ["acme/solo"] },
+    );
+    const projects = [{ path: "/work/lr" }, { path: "/work/solo" }];
+    const listCalls = (repo: string) =>
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          ([command, args]) =>
+            command === "git_github_work_items" &&
+            (args as Record<string, unknown>).repo === repo,
+        ).length;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      await listInboxItems(projects, query, { force: true, background: true });
+      now.mockReturnValue(1_000_000 + 60_000);
+      const polled = await listInboxItems(projects, query, {
+        force: true,
+        background: true,
+      });
+
+      // Nested repository reused; single-repo project refetched as before.
+      expect(listCalls("lr/api")).toBe(2);
+      expect(listCalls("acme/solo")).toBe(4);
+      expect(polled.items.map((item) => item.repo).sort()).toEqual([
+        "acme/solo",
+        "lr/api",
+      ]);
+
+      await listInboxItems(projects, query, { force: true });
+      expect(listCalls("lr/api")).toBe(4);
+
+      now.mockReturnValue(1_000_000 + 60_000 + 5 * 60_000);
+      await listInboxItems(projects, query, { force: true, background: true });
+      expect(listCalls("lr/api")).toBe(6);
+    } finally {
+      now.mockRestore();
+    }
+  });
 });
 
 describe("inboxRepoPath", () => {
