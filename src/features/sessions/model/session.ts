@@ -296,6 +296,8 @@ export type Block = {
   appRequestId?: string;
   /** Provider-reported token metrics for this user turn, when available. */
   turnMetrics?: TurnMetrics;
+  /** Thinking level the provider picked for this turn under an automatic level. */
+  turnEffort?: string;
   tool?: {
     callId?: string;
     title?: string;

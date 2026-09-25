@@ -14,18 +14,6 @@ export const SUPPORTED_PI_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
-export const PI_THINKING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
-export type PiThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
-
 export type PiModelRef = {
   provider: string;
   modelId: string;
@@ -733,7 +721,7 @@ export function modelsFromRpcData(
     const name = stringField(model, "name") || modelId;
     const contextWindow = numberField(model, "contextWindow");
     const settings = [
-      thinkingSetting(model.reasoning === true),
+      thinkingSetting(flavor, model.reasoning === true),
       flavor.id === "omp" ? fastModeSetting() : undefined,
     ].filter((setting): setting is ModelSetting => setting != null);
     models.push({
@@ -748,14 +736,17 @@ export function modelsFromRpcData(
   return models.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function thinkingSetting(reasoning: boolean): ModelSetting | undefined {
+export function thinkingSetting(
+  flavor: PiFlavor,
+  reasoning: boolean,
+): ModelSetting | undefined {
   if (!reasoning) return undefined;
   return {
     id: "thinking",
     label: "Thinking",
     kind: "select",
     value: "medium",
-    options: PI_THINKING_LEVELS.map((value) => ({
+    options: flavor.thinkingLevels.map((value) => ({
       value,
       label: thinkingLabel(value),
     })),
@@ -777,14 +768,14 @@ export function fastModeSetting(): ModelSetting {
 }
 
 export function isPiThinkingLevel(
+  flavor: PiFlavor,
   value: string | undefined,
-): value is PiThinkingLevel {
-  return !!value && (PI_THINKING_LEVELS as readonly string[]).includes(value);
+): value is string {
+  return !!value && flavor.thinkingLevels.includes(value);
 }
 
-function thinkingLabel(level: PiThinkingLevel): string {
+function thinkingLabel(level: string): string {
   if (level === "xhigh") return "Extra High";
-  if (level === "off") return "Off";
   return level.slice(0, 1).toUpperCase() + level.slice(1);
 }
 

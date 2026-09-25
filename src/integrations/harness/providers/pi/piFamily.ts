@@ -500,7 +500,7 @@ async function startLive(
     cwd: input.cwd,
     providerSessionId: resume ?? "",
     nativeModel: native,
-    thinking: input.modelSettings?.thinking ?? "",
+    thinking: "",
     fastModeEnabled: undefined,
     fastModeRequested: undefined,
     planning: input.intent === "plan",
@@ -776,6 +776,14 @@ function handleFrame(
       }
       return;
     }
+    // Under `auto`, omp announces the level it picked before each prompt.
+    if (type === "thinking_level_changed") {
+      const level = stringField(rec, "thinkingLevel");
+      if (live.thinking === "auto" && level && level !== "auto") {
+        live.onEvent({ type: "turn.effort", level });
+      }
+      return;
+    }
     if (type === "config_update") {
       const model = asRecord(rec.model);
       const provider = stringField(model, "provider");
@@ -788,7 +796,7 @@ function handleFrame(
       const native =
         provider && modelId ? piNativeId(provider, modelId) : undefined;
       if (native) live.nativeModel = native;
-      if (isPiThinkingLevel(thinking)) live.thinking = thinking;
+      if (isPiThinkingLevel(flavor, thinking)) live.thinking = thinking;
       if (fastModeEnabled != null) {
         live.fastModeEnabled = fastModeEnabled;
         live.fastModeRequested = fastModeEnabled;
@@ -796,10 +804,10 @@ function handleFrame(
       live.onEvent({
         type: "session.configChanged",
         ...(native ? { model: `${flavor.id}:${native}` } : {}),
-        ...(isPiThinkingLevel(thinking) || fastModeEnabled != null
+        ...(isPiThinkingLevel(flavor, thinking) || fastModeEnabled != null
           ? {
               modelSettings: {
-                ...(isPiThinkingLevel(thinking) ? { thinking } : {}),
+                ...(isPiThinkingLevel(flavor, thinking) ? { thinking } : {}),
                 ...(fastModeEnabled != null
                   ? { fast: String(fastModeEnabled) }
                   : {}),
@@ -1132,7 +1140,7 @@ async function applyModel(
   }
 
   const thinking = input.modelSettings?.thinking;
-  if (isPiThinkingLevel(thinking) && thinking !== live.thinking) {
+  if (isPiThinkingLevel(flavor, thinking) && thinking !== live.thinking) {
     await live.rpc
       .request({ type: "set_thinking_level", level: thinking })
       .catch(() => undefined);

@@ -341,6 +341,51 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
     await running.turn;
   });
 
+  it("applies auto thinking through OMP RPC before prompting", async () => {
+    const running = await started({
+      ...input(),
+      modelSettings: { thinking: "auto" },
+    });
+    const thinking = transport.requests.find(
+      (request) => request.command.type === "set_thinking_level",
+    );
+    const promptIndex = transport.requests.findIndex(
+      (request) => request.command.type === "prompt",
+    );
+
+    expect(thinking?.command).toMatchObject({
+      type: "set_thinking_level",
+      level: "auto",
+    });
+    expect(transport.requests.indexOf(thinking!)).toBeLessThan(promptIndex);
+    frame("omp-test", { type: "agent_end" });
+    await running.turn;
+  });
+
+  it("reports the level omp picks for each auto-thinking turn", async () => {
+    const running = await started({
+      ...input(),
+      modelSettings: { thinking: "auto" },
+    });
+    frame("omp-test", { type: "thinking_level_changed", thinkingLevel: "low" });
+
+    expect(events).toContainEqual({ type: "turn.effort", level: "low" });
+    frame("omp-test", { type: "agent_end" });
+    await running.turn;
+  });
+
+  it("does not report per-turn effort for a fixed thinking level", async () => {
+    const running = await started({
+      ...input(),
+      modelSettings: { thinking: "high" },
+    });
+    frame("omp-test", { type: "thinking_level_changed", thinkingLevel: "high" });
+
+    expect(events.some((event) => event.type === "turn.effort")).toBe(false);
+    frame("omp-test", { type: "agent_end" });
+    await running.turn;
+  });
+
   it("keeps fast mode in sync with OMP config updates", async () => {
     const running = await started();
     frame("omp-test", {

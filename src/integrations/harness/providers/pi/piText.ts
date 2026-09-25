@@ -133,7 +133,7 @@ async function promptOnLive(
     await session.rpc
       .request({
         type: "set_thinking_level",
-        level: isPiThinkingLevel(thinking) ? thinking : "off",
+        level: isPiThinkingLevel(flavor, thinking) ? thinking : "off",
       })
       .catch(() => undefined);
     const fast = input.modelSettings?.fast;
