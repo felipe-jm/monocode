@@ -5,13 +5,16 @@ import {
   filterInboxByKind,
   filterInboxByLinearProject,
   filterInboxByProject,
+  filterInboxByRepo,
   filterInboxByProvider,
   filterInboxByStatus,
   filterInboxByTime,
   hasActiveInboxFilters,
   inboxFetchState,
   LINEAR_NO_PROJECT,
+  inboxRepoOptions,
   linearProjectOptions,
+  loadInboxFilters,
   pruneInboxFilters,
   connectableInboxSources,
   loadInboxConnections,
@@ -711,5 +714,96 @@ describe("inbox connection cache", () => {
       gitlab: null,
       azuredevops: null,
     });
+  });
+});
+
+describe("repository filter", () => {
+  function repoItem(
+    repo: string,
+    number: number,
+    projectPath = "/work/lr",
+    repoPath = `/work/lr/${repo.split("/")[1]!.toLowerCase()}`,
+  ): InboxItem {
+    return {
+      provider: "github",
+      kind: "pr",
+      number,
+      title: `${repo} #${number}`,
+      url: `https://github.com/${repo}/pull/${number}`,
+      state: "open",
+      updatedAt: "2026-09-25T10:00:00Z",
+      labels: [],
+      assignees: [],
+      draft: false,
+      repo,
+      projectPath,
+      repoPath,
+    };
+  }
+
+  const rows = [
+    repoItem("lr/api", 1),
+    repoItem("LR/Web", 2),
+    repoItem("acme/site", 3, "/work/site", "/work/site"),
+  ];
+
+  it("hides only items from hidden repositories, ignoring case", () => {
+    expect(filterInboxByRepo(rows, ["lr/web"]).map((row) => row.number)).toEqual(
+      [1, 3],
+    );
+  });
+
+  it("hides a project's repositories with the project", () => {
+    expect(
+      applyInboxFilters(
+        rows,
+        { ...DEFAULT_INBOX_FILTERS, hiddenProjects: ["/work/lr"], hiddenRepos: [] },
+        "",
+      ).map((row) => row.number),
+    ).toEqual([3]);
+  });
+
+  it("applies the repository filter on the GitHub tab", () => {
+    expect(
+      applyInboxFilters(
+        rows,
+        { ...DEFAULT_INBOX_FILTERS, hiddenRepos: ["lr/api"] },
+        "",
+        Date.now(),
+        "github",
+      ).map((row) => row.number),
+    ).toEqual([2, 3]);
+    expect(
+      hasActiveInboxFilters(
+        { ...DEFAULT_INBOX_FILTERS, hiddenRepos: ["lr/api"] },
+        "github",
+      ),
+    ).toBe(true);
+  });
+
+  it("offers repositories only for projects holding several", () => {
+    expect([...inboxRepoOptions(rows)]).toEqual([
+      ["/work/lr", ["lr/api", "LR/Web"]],
+    ]);
+  });
+
+  it("keeps hidden repositories when pruning projects", () => {
+    const filters = {
+      ...DEFAULT_INBOX_FILTERS,
+      hiddenProjects: ["/gone"],
+      hiddenRepos: ["lr/api"],
+    };
+    expect(pruneInboxFilters(filters, ["/work/lr"]).hiddenRepos).toEqual([
+      "lr/api",
+    ]);
+  });
+
+  it("loads saved repositories lowercased and drops invalid entries", () => {
+    mockLocalStorage();
+    localStorage.setItem(
+      "monocode.inboxFilters",
+      JSON.stringify({ hiddenRepos: ["LR/Api", "", 7] }),
+    );
+    expect(loadInboxFilters().hiddenRepos).toEqual(["lr/api"]);
   });
 });

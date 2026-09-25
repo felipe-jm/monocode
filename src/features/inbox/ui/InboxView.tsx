@@ -87,6 +87,7 @@ import {
   hasActiveInboxFilters,
   loadInboxConnections,
   linearProjectOptions,
+  inboxRepoOptions,
   inboxFetchState,
   loadInboxFilters,
   loadInboxSource,
@@ -462,6 +463,7 @@ export function InboxView({
     [logos, projects],
   );
   const linearProjects = useMemo(() => linearProjectOptions(items), [items]);
+  const repoOptions = useMemo(() => inboxRepoOptions(items), [items]);
   const activeFilters = useMemo(
     () =>
       pruneInboxFilters(
@@ -1094,6 +1096,7 @@ export function InboxView({
       x={filterMenu.x}
       y={filterMenu.y}
       projects={projectOptions}
+      reposByProject={repoOptions}
       linearProjects={linearProjects}
       linearTeams={linearTeams}
       hiddenLinearTeamIds={linearHiddenTeamIds}
