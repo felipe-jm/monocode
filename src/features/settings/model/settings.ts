@@ -165,6 +165,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Notes",
     keywords: "notebook markdown rail scratchpad",
   },
+  {
+    id: "auto-titles",
+    section: "general",
+    label: "Automatic session titles",
+    keywords: "title rename name session llm",
+  },
+  {
+    id: "idle-recap",
+    section: "general",
+    label: "Idle recap",
+    keywords: "recap summary idle away next step",
+  },
   ...(IS_MAC
     ? [
         {
@@ -699,6 +711,39 @@ export function loadAutoTitles(): boolean {
 
 export function saveAutoTitles(value: boolean) {
   writeFlag(AUTO_TITLES_KEY, value);
+}
+
+const IDLE_RECAP_KEY = "monocode.idleRecap";
+const IDLE_RECAP_SECONDS_KEY = "monocode.idleRecapSeconds";
+export const IDLE_RECAP_DEFAULT = true;
+export const IDLE_RECAP_SECONDS_DEFAULT = 240;
+export const IDLE_RECAP_SECONDS_OPTIONS = [60, 120, 240, 300, 600] as const;
+
+export function loadIdleRecap(): boolean {
+  return readFlag(IDLE_RECAP_KEY) ?? IDLE_RECAP_DEFAULT;
+}
+
+export function saveIdleRecap(value: boolean) {
+  writeFlag(IDLE_RECAP_KEY, value);
+}
+
+export function loadIdleRecapSeconds(): number {
+  try {
+    const value = Number(localStorage.getItem(IDLE_RECAP_SECONDS_KEY));
+    return (IDLE_RECAP_SECONDS_OPTIONS as readonly number[]).includes(value)
+      ? value
+      : IDLE_RECAP_SECONDS_DEFAULT;
+  } catch {
+    return IDLE_RECAP_SECONDS_DEFAULT;
+  }
+}
+
+export function saveIdleRecapSeconds(value: number) {
+  try {
+    localStorage.setItem(IDLE_RECAP_SECONDS_KEY, String(value));
+  } catch {
+    // private mode / quota
+  }
 }
 
 const QUICK_COMPOSER_ENABLED_KEY = "monocode.quickComposerEnabled";

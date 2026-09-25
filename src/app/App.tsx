@@ -114,6 +114,7 @@ import {
   zoomOutUiScale,
 } from "../features/settings/model/uiScale";
 import { runUpdateFlow } from "./model/updater";
+import { useIdleRecap } from "./useIdleRecap";
 import {
   displayAttachments,
   prepareAttachments,
@@ -1827,6 +1828,8 @@ export default function App({
     }, 650);
     return () => window.clearTimeout(timer);
   }, [persistSession, sessions]);
+
+  useIdleRecap({ sessions, sessionsRef, setSessions });
 
   useEffect(() => {
     const refs = inFlightRefs(sessions, tabs);
