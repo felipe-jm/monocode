@@ -81,6 +81,8 @@ pub struct SessionUpsert {
     pub runtime_mode: String,
     pub title: String,
     #[serde(default)]
+    pub title_source: Option<String>,
+    #[serde(default)]
     pub provider_session_id: Option<String>,
     #[serde(default)]
     pub provider_account_id: Option<String>,
@@ -174,6 +176,8 @@ pub struct SessionRecord {
     pub automation_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<String>,
 }
 
 #[tauri::command(async)]
@@ -458,6 +462,55 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
     Ok(())
 }
 
+/// Mirrors `titleFromPrompt` in session.ts: the client's placeholder title text.
+fn placeholder_seed(blocks: &Value) -> Option<String> {
+    let first = blocks.as_array()?.iter().find(|b| b["role"] == "user")?;
+    let text = first["text"].as_str().unwrap_or("");
+    let line = text.trim().lines().next().unwrap_or("").trim().to_string();
+    let seed = if line.is_empty() {
+        first["attachments"]
+            .as_array()
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| f["name"].as_str())
+                    .filter(|n| !n.is_empty())
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    } else {
+        line
+    };
+    if seed.is_empty() {
+        return None;
+    }
+    let units: Vec<u16> = seed.encode_utf16().collect();
+    if units.len() <= 72 {
+        return Some(seed);
+    }
+    Some(format!("{}…", String::from_utf16_lossy(&units[..71])))
+}
+
+fn backfill_title_source(conn: &Connection) -> rusqlite::Result<()> {
+    let rows: Vec<(String, String, String)> = conn
+        .prepare("SELECT id, title, blocks_json FROM sessions WHERE title LIKE '% · %'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, title, blocks) in rows {
+        let suffix = title.split_once(" · ").map(|(_, rest)| rest).unwrap_or("");
+        let blocks: Value = serde_json::from_str(&blocks).unwrap_or(Value::Null);
+        if placeholder_seed(&blocks).as_deref() != Some(suffix) {
+            conn.execute(
+                "UPDATE sessions SET title_source = 'user' WHERE id = ?1",
+                [&id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -574,6 +627,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("worktree_removed", "INTEGER NOT NULL DEFAULT 0"),
         ("is_draft", "INTEGER NOT NULL DEFAULT 0"),
         ("automation_id", "TEXT"),
+        ("title_source", "TEXT NOT NULL DEFAULT 'auto'"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -718,6 +772,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
         conn.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (18, ?1)",
+            params![now_millis()],
+        )?;
+    }
+    if current < 19 {
+        // Automatic titles must never overwrite one the user chose.
+        ensure_session_column(conn, "title_source", "TEXT NOT NULL DEFAULT 'auto'")?;
+        backfill_title_source(conn)?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (19, ?1)",
             params![now_millis()],
         )?;
     }
@@ -962,8 +1025,8 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
            provider_session_id, blocks_json, created_at, updated_at, branch,
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
-           automation_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+           automation_id, title_source
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -983,7 +1046,8 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
            provider_account_id = excluded.provider_account_id,
            worktree_removed = excluded.worktree_removed,
            is_draft = excluded.is_draft,
-           automation_id = excluded.automation_id",
+           automation_id = excluded.automation_id,
+           title_source = excluded.title_source",
         params![
             session.id,
             session.cwd,
@@ -1006,6 +1070,7 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
             i64::from(session.worktree_removed),
             i64::from(is_draft),
             automation_id,
+            if session.title_source.as_deref() == Some("user") { "user" } else { "auto" },
         ],
     )?;
 
@@ -1213,6 +1278,7 @@ fn block_hits(blocks: &Value, needle: &str) -> Vec<(String, String, String)> {
 fn block_texts(block: &Value) -> Vec<String> {
     let mut texts = Vec::new();
     push_text(&mut texts, block.get("text"));
+    push_text(&mut texts, block.get("recap"));
     if let Some(tool) = block.get("tool") {
         push_text(&mut texts, tool.get("title"));
         push_text(&mut texts, tool.get("detail"));
@@ -1562,7 +1628,7 @@ fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<S
                 provider_session_id, blocks_json, created_at, updated_at,
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
-                automation_id
+                automation_id, title_source
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL",
         params![session_id],
@@ -1602,6 +1668,7 @@ fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<S
                 linked_work_item: optional_json(row.get(15)?),
                 provider_account_id: row.get(16)?,
                 automation_id: nonempty(row.get(18)?),
+                title_source: (row.get::<_, String>(19)? == "user").then(|| "user".to_string()),
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -1721,6 +1788,7 @@ mod tests {
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
+            title_source: None,
         }
     }
 
@@ -1856,7 +1924,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -2811,5 +2879,79 @@ mod tests {
         .unwrap();
         assert!(result.hits.is_empty());
         assert!(!result.truncated);
+    }
+
+    #[test]
+    fn title_source_round_trips() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("s1", "/tmp/a", "omp · Named by me");
+        row.title_source = Some("user".into());
+        upsert_session(&conn, &row).unwrap();
+        assert_eq!(
+            get_session(&conn, "s1")
+                .unwrap()
+                .unwrap()
+                .title_source
+                .as_deref(),
+            Some("user")
+        );
+        row.title_source = None;
+        upsert_session(&conn, &row).unwrap();
+        assert_eq!(
+            get_session(&conn, "s1").unwrap().unwrap().title_source,
+            None
+        );
+    }
+
+    #[test]
+    fn title_source_backfill_marks_only_non_placeholder_titles() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let first = json!([{ "id": "u1", "role": "user", "text": "Fix the login bug\nmore" }]);
+        let rows = [
+            ("a", "omp · Fix the login bug", "auto"),      // seed
+            ("b", "omp", "auto"),                          // bare label
+            ("c", "omp · Login fix after deploy", "user"), // LLM or renamed
+        ];
+        for (id, title, _) in rows {
+            let mut row = sample(id, "/tmp/a", title);
+            row.blocks = first.clone();
+            upsert_session(&conn, &row).unwrap();
+        }
+        conn.execute("UPDATE sessions SET title_source = 'auto'", [])
+            .unwrap();
+        backfill_title_source(&conn).unwrap();
+        for (id, _, expected) in rows {
+            let source: String = conn
+                .query_row(
+                    "SELECT title_source FROM sessions WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(source, expected, "{id}");
+        }
+    }
+
+    #[test]
+    fn title_source_backfill_truncates_like_the_client() {
+        let long = "x".repeat(80);
+        assert_eq!(
+            placeholder_seed(&json!([{ "role": "user", "text": long }])),
+            Some(format!("{}…", "x".repeat(71)))
+        );
+    }
+
+    #[test]
+    fn search_finds_recap_text() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("s1", "/tmp/a", "omp · A");
+        row.blocks = json!([{ "id": "u1", "role": "user", "text": "hi", "recap": "Deploy do nginx pendente" }]);
+        upsert_session(&conn, &row).unwrap();
+        assert!(block_texts(&row.blocks[0])
+            .iter()
+            .any(|t| t.contains("nginx")));
     }
 }
