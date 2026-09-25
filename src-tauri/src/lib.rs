@@ -318,6 +318,7 @@ pub fn run() {
             fs::github_star_monocode,
             fs::git_github_repo,
             fs::git_github_repositories,
+            fs::git_project_repositories,
             fs::git_github_work_item,
             fs::git_github_work_items,
             fs::git_github_work_item_details,
