@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - omp sessions show the 5-hour and weekly usage limits in the status bar, read from `omp usage --json` for the provider behind the session's model, so they match omp's own accounts.
 - On macOS, a mic button in the Composer dictates into the prompt at the cursor. Transcription runs on the Mac with a whisper.cpp model file chosen in Settings → Chat → Dictation, where a language, a glossary of terms to spell right, and `wrong => right` corrections can also be set. The model loads on the first dictation and is released after two idle minutes.
 - Idle recap: after a session sits idle (4 minutes by default, 1–10 in Settings), a short muted `※ recap:` line appears under the last turn with what was done, where things stand, and the next step. The same call can rename the session when its subject has clearly changed. Sessions you rename keep their name.
+- The usage popover in the status bar lists every Claude Code and Codex account set up in Settings → Providers, each with its 5-hour and weekly usage and reset time. The account the session uses comes first, marked **in use**; for omp sessions it is matched by the email `omp usage` reports, which the omp popover also shows. Other accounts are read only while the popover is open, at most once every five minutes, and an account that fails shows its error without hiding the rest.
 
 ### Fixed
 

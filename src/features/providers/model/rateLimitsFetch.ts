@@ -205,7 +205,24 @@ export async function consumeCodexRateLimitResetCredit(
   throw new Error("Codex returned an unknown reset result");
 }
 
-async function requestCodexAccount<T>(
+/** Probes share one child id, so a second probe would kill the first. */
+let codexProbeQueue: Promise<unknown> = Promise.resolve();
+
+function requestCodexAccount<T>(
+  path: string,
+  cwd: string,
+  method: string,
+  params: unknown,
+  accountId: string,
+): Promise<T> {
+  const run = codexProbeQueue
+    .catch(() => undefined)
+    .then(() => probeCodexAccount<T>(path, cwd, method, params, accountId));
+  codexProbeQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function probeCodexAccount<T>(
   path: string,
   cwd: string,
   method: string,

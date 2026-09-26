@@ -315,6 +315,7 @@ describe("parseOmpUsage", () => {
           limit("anthropic:5h", 18_000_000, 0.17),
           limit("anthropic:7d", 604_800_000, 0.34),
         ],
+        metadata: { email: "devs3@example.com" },
       },
       {
         provider: "openai-codex",
@@ -338,6 +339,17 @@ describe("parseOmpUsage", () => {
   it("is unavailable when omp has no account for the model's provider", () => {
     expect(parseOmpUsage(stdout, "google").status).toBe("unavailable");
     expect(parseOmpUsage("not json", "anthropic").status).toBe("error");
+  });
+
+  it("names the account omp used, mapped to MonoCode's provider", () => {
+    expect(parseOmpUsage(stdout, "anthropic").account).toEqual({
+      provider: "claude",
+      email: "devs3@example.com",
+    });
+    expect(parseOmpUsage(stdout, "openai-codex").account).toEqual({
+      provider: "codex",
+      email: null,
+    });
   });
 });
 

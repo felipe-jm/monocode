@@ -134,6 +134,7 @@ export function UsageFooter({
       : selectedProviderAccountId("codex", project);
   const claudeAccounts = providerAccounts("claude");
   const codexAccounts = providerAccounts("codex");
+  const allAccounts = [...claudeAccounts, ...codexAccounts];
   const claudeAccountAvailable = providerAccountExists(
     "claude",
     claudeAccountId,
@@ -435,6 +436,7 @@ export function UsageFooter({
                 onManageAccounts ? () => onManageAccounts("claude") : undefined
               }
               onReconnect={reconnectClaude}
+              allAccounts={allAccounts}
             />
           ) : null}
           {wantCodex ? (
@@ -451,13 +453,24 @@ export function UsageFooter({
               }
               onConsumeReset={consumeCodexReset}
               onReconnect={reconnectCodex}
+              allAccounts={allAccounts}
             />
           ) : null}
           {showOpencodeChip ? (
-            <UsageProviderChip limits={opencode} now={now} project={project} />
+            <UsageProviderChip
+              limits={opencode}
+              now={now}
+              project={project}
+              allAccounts={allAccounts}
+            />
           ) : null}
           {showOmpChip ? (
-            <UsageProviderChip limits={omp} now={now} project={project} />
+            <UsageProviderChip
+              limits={omp}
+              now={now}
+              project={project}
+              allAccounts={allAccounts}
+            />
           ) : null}
           <button
             type="button"

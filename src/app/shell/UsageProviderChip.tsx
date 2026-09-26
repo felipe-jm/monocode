@@ -31,6 +31,11 @@ import {
 } from "../../features/sessions/ui/ProviderSignInPanel";
 import type { ProviderAccount } from "../../features/providers/model/providerAccounts";
 import {
+  accountUsageRows,
+  useAccountsUsage,
+  type ActiveUsageAccount,
+} from "../../features/providers/model/accountsUsage";
+import {
   identityKey,
   identityOrganizationTag,
   identitySubtitle,
@@ -57,6 +62,7 @@ export function UsageProviderChip({
   onManageAccounts,
   onConsumeReset,
   onReconnect,
+  allAccounts = [],
 }: {
   limits: ProviderRateLimits;
   now: number;
@@ -68,6 +74,8 @@ export function UsageProviderChip({
   onManageAccounts?: () => void;
   onConsumeReset?: (creditId?: string) => Promise<CodexRateLimitResetOutcome>;
   onReconnect?: () => Promise<void>;
+  /** Every MonoCode profile, listed with its usage under the active account. */
+  allAccounts?: ProviderAccount[];
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -299,6 +307,11 @@ export function UsageProviderChip({
                   <h2 className="text-[13px] font-medium leading-4">
                     {providerLabel} usage
                   </h2>
+                  {limits.provider === "omp" && limits.account?.email ? (
+                    <p className="mt-0.5 truncate text-[10px] leading-4 text-content/55">
+                      omp account · {limits.account.email}
+                    </p>
+                  ) : null}
                   <p className="mt-0.5 text-[10px] leading-4 text-content/40">
                     {updatedLabel(limits, now)}
                   </p>
@@ -380,11 +393,110 @@ export function UsageProviderChip({
                   canUse={Boolean(onConsumeReset)}
                 />
               ) : null}
+
+              {allAccounts.length > 0 ? (
+                <AllAccountsUsage
+                  accounts={allAccounts}
+                  active={{
+                    chip: limits.provider,
+                    accountId,
+                    ompAccount: limits.account,
+                  }}
+                  activeLimits={limits.provider === "omp" ? null : limits}
+                  now={now}
+                />
+              ) : null}
             </>
           )}
         </Popover>
       ) : null}
     </>
+  );
+}
+
+/** Compact usage of every MonoCode profile, the one in use first. */
+function AllAccountsUsage({
+  accounts,
+  active,
+  activeLimits,
+  now,
+}: {
+  accounts: ProviderAccount[];
+  active: ActiveUsageAccount;
+  /** The chip's own snapshot, reused for its account instead of refetching. */
+  activeLimits: ProviderRateLimits | null;
+  now: number;
+}) {
+  const identities = useProviderAccountIdentities(accounts);
+  const usage = useAccountsUsage(accounts, true);
+  const emails = Object.fromEntries(
+    Object.entries(identities).map(([key, identity]) => [key, identity?.email]),
+  );
+  const rows = accountUsageRows(accounts, emails, active);
+  return (
+    <section className="mt-3 border-t border-content/[0.08] pt-2.5" aria-label="All accounts">
+      <h3 className="px-1 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">
+        All accounts
+      </h3>
+      <ul className="flex flex-col gap-1">
+        {rows.map(({ account, email, inUse }) => {
+          const key = identityKey(account);
+          const limits =
+            inUse && activeLimits?.provider === account.provider
+              ? activeLimits
+              : usage[key];
+          const windows = limits ? usageWindows(limits) : [];
+          return (
+            <li
+              key={key}
+              className="rounded-lg bg-content/[0.035] px-2.5 py-2 ring-1 ring-inset ring-content/[0.05]"
+              data-account-usage={key}
+            >
+              <div className="flex items-center gap-1.5">
+                <HarnessIcon harness={account.provider} className="size-3 shrink-0" />
+                <span className="min-w-0 truncate text-[11px] font-medium">
+                  {account.label}
+                </span>
+                {inUse ? (
+                  <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium text-accent">
+                    in use
+                  </span>
+                ) : null}
+              </div>
+              {email ? (
+                <p className="mt-0.5 truncate text-[10px] leading-4 text-content/40">
+                  {email}
+                </p>
+              ) : null}
+              <div className="mt-1 flex flex-col gap-0.5 text-[10px] leading-4 tabular-nums text-content/60">
+                {!limits || (limits.status === "fetching" && windows.length === 0) ? (
+                  <span className="animate-pulse text-content/35">Loading…</span>
+                ) : windows.length === 0 ? (
+                  <span className="text-content/40">
+                    {limits.error ?? emptyUsageLabel(limits)}
+                  </span>
+                ) : (
+                  windows.map((entry) => (
+                    <span key={entry.key} className="flex items-center gap-1.5">
+                      <span className="w-6 shrink-0 text-content/40">
+                        {entry.key === "session" ? "5h" : entry.key === "weekly" ? "7d" : "30d"}
+                      </span>
+                      <MiniBar usedPct={entry.window.usedPercent} />
+                      <span>{formatUsagePercent(entry.window.usedPercent)}</span>
+                      {entry.window.resetsAt != null ? (
+                        <span className="ml-auto text-content/35">
+                          {formatResetCountdown(entry.window.resetsAt - now)}
+                        </span>
+                      ) : null}
+                    </span>
+                  ))
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

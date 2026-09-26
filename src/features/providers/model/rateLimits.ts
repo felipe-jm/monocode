@@ -37,9 +37,23 @@ export type ProviderRateLimits = {
   monthly: RateLimitWindow | null;
   /** Codex-only banked rate-limit reset rewards, when supplied by app-server. */
   resetCredits: RateLimitResetCredits | null;
+  /** omp only: the provider account omp read usage from, in MonoCode's terms. */
+  account?: OmpUsageAccount;
   updatedAt: number;
   error: string | null;
   status: RateLimitStatus;
+};
+
+export type OmpUsageAccount = {
+  /** MonoCode provider behind omp's report, when MonoCode has profiles for it. */
+  provider: RateLimitProvider | null;
+  email: string | null;
+};
+
+/** omp provider ids that map to MonoCode's own account providers. */
+const OMP_ACCOUNT_PROVIDERS: Record<string, RateLimitProvider> = {
+  anthropic: "claude",
+  "openai-codex": "codex",
 };
 
 export const SESSION_WINDOW_MINUTES = 300;
@@ -373,12 +387,20 @@ export function parseOmpUsage(
     if (mapped.windowMinutes === SESSION_WINDOW_MINUTES) session ??= mapped;
     else if (mapped.windowMinutes === WEEKLY_WINDOW_MINUTES) weekly ??= mapped;
   }
+  const email = asRecord(report.metadata)?.email;
   return {
     provider: "omp",
     session,
     weekly,
     monthly: null,
     resetCredits: null,
+    account: {
+      provider:
+        typeof report.provider === "string"
+          ? (OMP_ACCOUNT_PROVIDERS[report.provider] ?? null)
+          : null,
+      email: typeof email === "string" && email ? email : null,
+    },
     updatedAt: Date.now(),
     error: null,
     status: "ok",
