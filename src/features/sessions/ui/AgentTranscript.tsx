@@ -4042,15 +4042,17 @@ function syncTranscriptViewport(el: HTMLElement | null) {
   el.style.setProperty("--transcript-viewport", next);
 }
 
-/** Idle recap line after a settled turn; backticks render as inline code. */
+/** Idle recap line after a settled turn; `code` and **bold** render inline. */
 function TurnRecap({ text }: { text: string }) {
-  const parts = text.split(/(`[^`]+`)/g);
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
   return (
     <p className="px-4 pt-1 pb-2 text-[13px] leading-relaxed italic text-content/50" data-turn-recap>
       <span aria-hidden>※ </span>recap:{" "}
       {parts.map((part, index) =>
-        part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
+        part.length > 2 && part.startsWith("`") && part.endsWith("`") ? (
           <code key={index} className="not-italic font-mono text-[12px]">{part.slice(1, -1)}</code>
+        ) : part.length > 4 && part.startsWith("**") && part.endsWith("**") ? (
+          <strong key={index} className="font-semibold">{part.slice(2, -2)}</strong>
         ) : (
           part
         ),

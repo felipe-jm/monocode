@@ -45,6 +45,16 @@ describe("AgentTranscript recap line", () => {
     expect(recapLine()?.querySelector("code")?.textContent).toBe("npm test");
   });
 
+  it("renders **bold** without the asterisks", () => {
+    const bold: Block[] = [
+      { ...blocks[0], recap: "Next: open **Financeiro → Cadastrar** and run `x`." },
+      blocks[1],
+    ];
+    act(() => root.render(createElement(AgentTranscript, { blocks: bold, busy: false })));
+    expect(recapLine()?.textContent).toBe("※ recap: Next: open Financeiro → Cadastrar and run x.");
+    expect(recapLine()?.querySelector("strong")?.textContent).toBe("Financeiro → Cadastrar");
+  });
+
   it("hides the recap while the last turn is still running", () => {
     act(() => root.render(createElement(AgentTranscript, { blocks, busy: true })));
     expect(recapLine()).toBeNull();
