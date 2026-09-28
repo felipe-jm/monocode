@@ -34,6 +34,8 @@ import {
 } from "../../features/terminal/model/terminalTab";
 import { MOD } from "../../platform/tauri/platform";
 import { UsageProviderChip } from "./UsageProviderChip";
+import { SessionGitChips } from "./SessionGitChips";
+import type { SessionGitActivity } from "../../features/sessions/model/sessionGitActivity";
 import {
   ProviderSignInPanel,
   type ProviderSignInState,
@@ -64,6 +66,7 @@ export function UsageFooter({
   providers,
   session,
   project,
+  git,
   terminals = [],
   terminalOpen = false,
   onToggleTerminal,
@@ -76,6 +79,8 @@ export function UsageFooter({
   providers: RateLimitProvider[];
   session?: UsageFooterSession;
   project?: string;
+  /** Branches and pull requests the session's agent created. */
+  git?: SessionGitActivity;
   terminals?: RunningTerminal[];
   terminalOpen?: boolean;
   onToggleTerminal?: (fileId: string) => void;
@@ -490,6 +495,7 @@ export function UsageFooter({
       ) : session ? (
         <SessionChip key={session.id ?? session.harness} session={session} />
       ) : null}
+      {git ? <SessionGitChips activity={git} /> : null}
       {showTerminals || showTerminalButton ? (
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {showTerminals ? (

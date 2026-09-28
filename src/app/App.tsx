@@ -541,6 +541,7 @@ import {
   linkedWorkItemFromInboxItem,
   resolveLinkedWorkItem,
 } from "../features/sessions/model/sessionWorkItem";
+import { sessionGitActivity } from "../features/sessions/model/sessionGitActivity";
 import {
   completeLinkedWorkItemUpdateCard,
   failLinkedWorkItemUpdateCard,
@@ -1480,6 +1481,10 @@ export default function App({
     active?.providerAccountId,
     active?.model,
   ]);
+  const activeGitActivity = useMemo(
+    () => (active ? sessionGitActivity(active.blocks) : undefined),
+    [active?.blocks],
+  );
   const activeProviderSignInRequest = useMemo(() => {
     if (
       !active ||
@@ -10542,6 +10547,7 @@ export default function App({
                   providers={usageProviders}
                   session={usageSession}
                   project={active?.cwd ?? projectCwd}
+                  git={activeGitActivity}
                   onSelectAccount={onSelectProviderAccount}
                   onManageAccounts={() =>
                     openSettings("providers", "provider-accounts")
