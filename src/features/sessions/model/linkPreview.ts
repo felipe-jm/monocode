@@ -13,11 +13,8 @@ export type GithubWorkItemLink = {
   number: number;
 };
 
-export type UserMessageLink = {
-  link: UserLink;
-  beforeText: string;
-  afterText: string;
-};
+/** User message split into prose and web links, in order. */
+export type UserMessagePart = string | UserLink;
 
 export type LinkPreviewMetadata = {
   title: string | null;
@@ -26,20 +23,23 @@ export type LinkPreviewMetadata = {
 
 const metadataCache = new Map<string, Promise<LinkPreviewMetadata>>();
 
-/** Find the first web URL and preserve the rest of the user's message. */
-export function parseUserMessageLink(text: string): UserMessageLink | null {
-  const match = /https?:\/\/[^\s<>"']+/i.exec(text);
-  if (!match) return null;
-
-  const value = trimUrlPunctuation(match[0]);
-  const link = parseHttpUrl(value);
-  if (!link) return null;
-
-  return {
-    link,
-    beforeText: text.slice(0, match.index),
-    afterText: text.slice(match.index + value.length),
-  };
+/** Split a user message at every web URL; null when it holds none. */
+export function parseUserMessageLinks(text: string): UserMessagePart[] | null {
+  const parts: UserMessagePart[] = [];
+  let found = false;
+  let cursor = 0;
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"']+/gi)) {
+    const value = trimUrlPunctuation(match[0]);
+    const link = parseHttpUrl(value);
+    if (!link || match.index === undefined) continue;
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    parts.push(link);
+    cursor = match.index + value.length;
+    found = true;
+  }
+  if (!found) return null;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
 }
 
 /** Kept as a small utility for callers that need the stricter exact-URL rule. */

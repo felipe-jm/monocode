@@ -132,6 +132,17 @@ describe("AgentTranscript collapsed work", () => {
     expect(markup).not.toContain("Connection refused");
   });
 
+  it("turns every pull request link in a user message into a chip", () => {
+    const markup = render([
+      {
+        id: "prs",
+        role: "user",
+        text: "1. https://github.com/acme/api/pull/3311\n2. https://github.com/acme/api/pull/3312\n3. https://github.com/acme/mobile/pull/49\nrevise",
+      },
+    ]);
+    expect(markup.match(/data-github-work-item-chip="pr"/g)).toHaveLength(3);
+  });
+
   it("offers the saved CI context in a collapsed disclosure beside the short request", () => {
     const markup = render([
       {

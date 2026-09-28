@@ -85,7 +85,7 @@ import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
 import type { TranscriptLayout } from "../../settings/model/appearance";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { TranscriptSelectionMenu } from "./TranscriptSelectionMenu";
-import { parseUserMessageLink } from "../model/linkPreview";
+import { parseUserMessageLinks } from "../model/linkPreview";
 import { UserLinkPreview } from "./UserLinkPreview";
 import {
   activityPhaseTitle,
@@ -1874,10 +1874,7 @@ function UserMessageBlock({
     card && card.kind !== "handoff"
       ? ""
       : visibleUserPrompt(monocode ? operatorUserPrompt(block) : block.text);
-  const messageLink = text ? parseUserMessageLink(text) : null;
-  const displayText = messageLink
-    ? `${messageLink.beforeText}${messageLink.afterText}`
-    : text;
+  const messageParts = text ? parseUserMessageLinks(text) : null;
   const chat = layout === "chat";
   const textOnly =
     Boolean(text) &&
@@ -1975,7 +1972,7 @@ function UserMessageBlock({
               <SecondOpinionCard card={card} />
             </div>
           ) : null}
-          {messageLink ? (
+          {messageParts ? (
             <div
               ref={(element) => {
                 textRef.current = element;
@@ -1983,11 +1980,20 @@ function UserMessageBlock({
               className="user-message-with-link min-w-0 whitespace-pre-wrap break-words font-sans text-sm"
               data-selectable-agent-response={block.id}
             >
-              {messageLink.beforeText}
-              <UserLinkPreview link={messageLink.link} cwd={cwd} compact />
-              {messageLink.afterText}
+              {messageParts.map((part, index) =>
+                typeof part === "string" ? (
+                  part
+                ) : (
+                  <UserLinkPreview
+                    key={`${index}:${part.url}`}
+                    link={part}
+                    cwd={cwd}
+                    compact
+                  />
+                ),
+              )}
             </div>
-          ) : displayText ? (
+          ) : text ? (
             <pre
               data-selectable-agent-response={block.id}
               ref={(element) => {
@@ -1995,7 +2001,7 @@ function UserMessageBlock({
               }}
               className={`min-w-0 whitespace-pre-wrap break-words font-sans text-sm ${expanded ? "" : "line-clamp-4"}`}
             >
-              {displayText}
+              {text}
             </pre>
           ) : null}
           {overflows ? (

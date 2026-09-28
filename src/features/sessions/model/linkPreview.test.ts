@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseStandaloneHttpUrl, parseUserMessageLink } from "./linkPreview";
+import { parseStandaloneHttpUrl, parseUserMessageLinks, type UserLink } from "./linkPreview";
 
 describe("parseStandaloneHttpUrl", () => {
   it("normalizes a standalone web URL for display", () => {
@@ -31,14 +31,20 @@ describe("parseStandaloneHttpUrl", () => {
   });
 });
 
-describe("parseUserMessageLink", () => {
+function firstLink(text: string): UserLink | undefined {
+  return parseUserMessageLinks(text)?.find(
+    (part): part is UserLink => typeof part !== "string",
+  );
+}
+
+describe("parseUserMessageLinks", () => {
   it("extracts a URL followed by a comment", () => {
     expect(
-      parseUserMessageLink(
+      parseUserMessageLinks(
         "https://github.com/hardbeat920/monocode/pull/226 check this",
       ),
-    ).toEqual({
-      link: {
+    ).toEqual([
+      {
         url: "https://github.com/hardbeat920/monocode/pull/226",
         host: "github.com",
         displayUrl: "github.com/hardbeat920/monocode/pull/226",
@@ -48,44 +54,51 @@ describe("parseUserMessageLink", () => {
           number: 226,
         },
       },
-      beforeText: "",
-      afterText: " check this",
-    });
+      " check this",
+    ]);
+  });
+
+  it("links every URL in the message, not only the first", () => {
+    const parts = parseUserMessageLinks(
+      "1. https://github.com/acme/api/pull/3311\n2. https://github.com/acme/api/pull/3312\n3. https://github.com/acme/mobile/pull/49\nrevise",
+    );
+    expect(
+      parts?.map((part) =>
+        typeof part === "string" ? part : part.githubWorkItem?.number,
+      ),
+    ).toEqual(["1. ", 3311, "\n2. ", 3312, "\n3. ", 49, "\nrevise"]);
   });
 
   it("recognizes GitHub issues and links to a PR subpage", () => {
     expect(
-      parseUserMessageLink(
-        "https://github.com/acme/widgets/issues/42#issuecomment-1",
-      )?.link.githubWorkItem,
+      firstLink("https://github.com/acme/widgets/issues/42#issuecomment-1")
+        ?.githubWorkItem,
     ).toEqual({ kind: "issue", repo: "acme/widgets", number: 42 });
     expect(
-      parseUserMessageLink("https://www.github.com/acme/widgets/pull/73/files")
-        ?.link.githubWorkItem,
+      firstLink("https://www.github.com/acme/widgets/pull/73/files")
+        ?.githubWorkItem,
     ).toEqual({ kind: "pr", repo: "acme/widgets", number: 73 });
   });
 
   it("leaves other GitHub URLs as normal web links", () => {
     expect(
-      parseUserMessageLink("https://github.com/acme/widgets/actions")?.link
-        .githubWorkItem,
+      firstLink("https://github.com/acme/widgets/actions")?.githubWorkItem,
     ).toBeUndefined();
     expect(
-      parseUserMessageLink("https://github.com/acme/widgets/issues/0")?.link
-        .githubWorkItem,
+      firstLink("https://github.com/acme/widgets/issues/0")?.githubWorkItem,
     ).toBeUndefined();
   });
 
   it("preserves prose around a URL and drops sentence punctuation", () => {
-    const result = parseUserMessageLink(
+    const parts = parseUserMessageLinks(
       "Please review (https://example.com/docs), thanks",
     );
-    expect(result?.beforeText).toBe("Please review (");
-    expect(result?.afterText).toBe("), thanks");
-    expect(result?.link.url).toBe("https://example.com/docs");
+    expect(parts?.[0]).toBe("Please review (");
+    expect((parts?.[1] as UserLink).url).toBe("https://example.com/docs");
+    expect(parts?.[2]).toBe("), thanks");
   });
 
   it("returns null when there is no valid web URL", () => {
-    expect(parseUserMessageLink("Nothing to preview here")).toBeNull();
+    expect(parseUserMessageLinks("Nothing to preview here")).toBeNull();
   });
 });

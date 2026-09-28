@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A user message with several links shows each one as a link chip. Before, only the first became a chip (e.g. **PR #3311**) and the others stayed as raw URLs.
 - omp sessions can ask clarifying questions: MonoCode now starts omp in `rpc-ui` mode, which exposes its `ask` tool, so questions open in the form above the Composer. Choosing **Other (type your own)** opens a follow-up text prompt.
 - Output from omp's local commands such as `/usage` shows in full as a code block, instead of one truncated gray line, and the turn no longer claims the model worked on it.
 - omp and Pi sessions get an LLM title after the first message again. MonoCode picked the alphabetically first cheap model, which on current catalogs is the retired Claude 3 Haiku; it now picks the newest cheap model and retries once with the next one.
