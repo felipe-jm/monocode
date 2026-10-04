@@ -87,6 +87,7 @@ type Props = {
   recents: RecentProject[];
   inboxUnseen?: boolean;
   busyPaths?: Iterable<string>;
+  donePaths?: Iterable<string>;
   canGoBack?: boolean;
   canGoForward?: boolean;
   onGoBack?: () => void;
@@ -123,6 +124,7 @@ export function ProjectRail({
   recents,
   inboxUnseen = false,
   busyPaths,
+  donePaths,
   canGoBack = false,
   canGoForward = false,
   onGoBack,
@@ -237,11 +239,8 @@ export function ProjectRail({
       })),
     };
   }, [projectGroupAssignments, projectGroups, sections.projects]);
-  const busy = useMemo(() => {
-    const set = new Set<string>();
-    for (const path of busyPaths ?? []) set.add(path);
-    return set;
-  }, [busyPaths]);
+  const busy = useMemo(() => new Set(busyPaths ?? []), [busyPaths]);
+  const done = useMemo(() => new Set(donePaths ?? []), [donePaths]);
 
   useEffect(() => {
     setRailOrder((prev) => {
@@ -402,6 +401,7 @@ export function ProjectRail({
                 muteStatuses={muteStatuses}
                 cwd={cwd}
                 busy={busy}
+                done={done}
                 sortable={pinnedSortable}
                 pinned
                 searchActive={
@@ -437,6 +437,7 @@ export function ProjectRail({
                       muteStatuses={muteStatuses}
                       cwd={cwd}
                       busy={busy}
+                      done={done}
                       searchActive={
                         searchActive ||
                         inboxActive ||
@@ -480,6 +481,7 @@ export function ProjectRail({
               onAdd={onOpenProject}
               cwd={cwd}
               busy={busy}
+              done={done}
               sortable={projectSortable}
               pinned={false}
               searchActive={
@@ -561,6 +563,7 @@ function ProjectSection({
   onAdd,
   cwd,
   busy,
+  done,
   sortable,
   pinned,
   searchActive,
@@ -581,6 +584,7 @@ function ProjectSection({
   onAdd?: () => void;
   cwd: string;
   busy: Set<string>;
+  done: Set<string>;
   sortable: SortableHandle;
   pinned: boolean;
   searchActive: boolean;
@@ -609,7 +613,8 @@ function ProjectSection({
             item={item}
             muteStatus={muteStatuses.get(pathKey(item.path)) ?? undefined}
             selected={!searchActive && sameProjectPath(item.path, cwd)}
-            busy={isBusyPath(item.path, busy)}
+            busy={hasProjectPath(item.path, busy)}
+            done={hasProjectPath(item.path, done)}
             pinned={pinned}
             sortable={sortable}
             onSelect={onSelect}
@@ -677,6 +682,7 @@ function ProjectGroupSection({
   muteStatuses,
   cwd,
   busy,
+  done,
   searchActive,
   onSelect,
   onTogglePin,
@@ -696,6 +702,7 @@ function ProjectGroupSection({
   muteStatuses: ReadonlyMap<string, string | null>;
   cwd: string;
   busy: Set<string>;
+  done: Set<string>;
   searchActive: boolean;
   onSelect: (path: string) => void;
   onTogglePin: (path: string) => void;
@@ -801,7 +808,8 @@ function ProjectGroupSection({
               item={item}
               muteStatus={muteStatuses.get(pathKey(item.path)) ?? undefined}
               selected={!searchActive && sameProjectPath(item.path, cwd)}
-              busy={isBusyPath(item.path, busy)}
+              busy={hasProjectPath(item.path, busy)}
+              done={hasProjectPath(item.path, done)}
               pinned={false}
               sortable={sortable}
               onSelect={onSelect}
@@ -823,12 +831,15 @@ function ProjectGroupSection({
 
 const nameClassName =
   "min-w-0 flex-1 truncate text-sm font-medium leading-tight";
+// Hugs the text so the done dot sits right after the project name.
+const cardNameClassName = "min-w-0 truncate text-sm font-medium leading-tight";
 
 function ProjectCard({
   item,
   muteStatus,
   selected,
   busy,
+  done,
   pinned,
   sortable,
   onSelect,
@@ -845,6 +856,7 @@ function ProjectCard({
   muteStatus?: string;
   selected: boolean;
   busy: boolean;
+  done: boolean;
   pinned: boolean;
   sortable: SortableHandle;
   onSelect: (path: string) => void;
@@ -869,8 +881,9 @@ function ProjectCard({
   const additions = stats?.additions ?? 0;
   const deletions = stats?.deletions ?? 0;
   const hasChanges = files > 0 || additions > 0 || deletions > 0;
-  const cardTitle = projectCardTitle(item.path, name, stats, busy);
-  const cardAriaLabel = projectCardAriaLabel(name, stats, busy);
+  const showDone = done && !busy;
+  const cardTitle = projectCardTitle(item.path, name, stats, busy, showDone);
+  const cardAriaLabel = projectCardAriaLabel(name, stats, busy, showDone);
 
   return (
     <div
@@ -931,13 +944,22 @@ function ProjectCard({
             />
           )}
         </div>
-        {busy ? (
-          <Shimmer as="span" duration={1.4} className={nameClassName}>
-            {name}
-          </Shimmer>
-        ) : (
-          <span className={nameClassName}>{name}</span>
-        )}
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          {busy ? (
+            <Shimmer as="span" duration={1.4} className={cardNameClassName}>
+              {name}
+            </Shimmer>
+          ) : (
+            <span className={cardNameClassName}>{name}</span>
+          )}
+          {showDone ? (
+            <span
+              aria-hidden
+              data-project-done
+              className="size-1.5 shrink-0 rounded-full bg-accent"
+            />
+          ) : null}
+        </span>
         {hasChanges ? (
           <span className="project-card-stats shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden">
             <ProjectDiffStat additions={additions} deletions={deletions} />
@@ -996,8 +1018,8 @@ function ProjectCard({
   );
 }
 
-function isBusyPath(path: string, busy: Set<string>): boolean {
-  for (const other of busy) {
+function hasProjectPath(path: string, paths: Set<string>): boolean {
+  for (const other of paths) {
     if (sameProjectPath(path, other)) return true;
   }
   return false;
@@ -1039,9 +1061,11 @@ function projectCardTitle(
   name: string,
   stats: GitDiffStats | null,
   busy: boolean,
+  done: boolean,
 ): string {
   const parts = [name, path];
   if (busy) parts.push("Working");
+  if (done) parts.push("Session finished");
   const files = stats?.files ?? 0;
   const additions = stats?.additions ?? 0;
   const deletions = stats?.deletions ?? 0;
@@ -1063,9 +1087,11 @@ function projectCardAriaLabel(
   name: string,
   stats: GitDiffStats | null,
   busy: boolean,
+  done: boolean,
 ): string {
   const parts = [name];
   if (busy) parts.push("working");
+  if (done) parts.push("session finished");
   const files = stats?.files ?? 0;
   const additions = stats?.additions ?? 0;
   const deletions = stats?.deletions ?? 0;

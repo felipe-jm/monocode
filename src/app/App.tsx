@@ -1583,6 +1583,19 @@ export default function App({
     focusedForDoneRef.current = activeSessionId;
   }
   const unseenFinishedIds = unseenFinishedRef.current;
+  // Remember each unseen session's project, since idle sessions may be
+  // detached from `sessions` before the user looks at them.
+  const unseenFinishedCwdsRef = useRef<Map<string, string>>(new Map());
+  const unseenFinishedCwds = unseenFinishedCwdsRef.current;
+  for (const id of unseenFinishedCwds.keys()) {
+    if (!unseenFinishedIds.has(id)) unseenFinishedCwds.delete(id);
+  }
+  for (const session of sessions) {
+    if (session.cwd && unseenFinishedIds.has(session.id)) {
+      unseenFinishedCwds.set(session.id, session.cwd);
+    }
+  }
+  const doneProjectPaths = [...unseenFinishedCwds.values()];
 
   const liveAgents = useMemo(
     () =>
@@ -10192,6 +10205,7 @@ export default function App({
               busyProjectPaths={sessions.flatMap((session) =>
                 session.busy && session.cwd ? [session.cwd] : [],
               )}
+              doneProjectPaths={doneProjectPaths}
               liveAgents={liveAgents}
               onSelectAgent={onSelectLiveAgent}
               onSelectProject={onSelectProject}

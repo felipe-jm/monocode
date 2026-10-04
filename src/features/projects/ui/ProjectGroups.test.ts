@@ -193,3 +193,26 @@ it("creates, styles, assigns, and deletes a group from the rail", async () => {
     document.querySelector('button[aria-label="New project group"]'),
   ).toBeNull();
 });
+
+it("marks projects with an unseen finished session unless still working", async () => {
+  await act(async () =>
+    root.render(
+      createElement(ProjectRail, {
+        cwd: "/work/personal",
+        recents: [
+          { path: "/work/client", openedAt: 1 },
+          { path: "/work/personal", openedAt: 2 },
+        ],
+        donePaths: ["/work/client/", "/work/personal"],
+        busyPaths: ["/work/personal"],
+        onSelectProject: vi.fn(),
+        onOpenProject: vi.fn(),
+      }),
+    ),
+  );
+
+  const client = button("client, session finished");
+  expect(client.querySelector("[data-project-done]")).not.toBeNull();
+  const personal = button("personal, working");
+  expect(personal.querySelector("[data-project-done]")).toBeNull();
+});
