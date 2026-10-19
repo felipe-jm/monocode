@@ -37,10 +37,18 @@ import {
 } from "../../files/model/fileIndex";
 import { prettyCwd, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
-import { searchProject, type OpenFileFn } from "../model/search";
+import { isLocalProject, type RecentProject } from "../../projects/model/recents";
+import {
+  cancelProjectSearch,
+  searchProject,
+  type OpenFileFn,
+} from "../model/search";
 import { type Session } from "../../sessions/model/session";
-import { searchSessions, type SessionSummary } from "../../sessions/data/sessionStore";
+import {
+  cancelSessionSearch,
+  searchSessions,
+  type SessionSummary,
+} from "../../sessions/data/sessionStore";
 
 const SCOPES: { id: SearchScope; label: string }[] = [
   { id: "all", label: "All" },
@@ -50,6 +58,7 @@ const SCOPES: { id: SearchScope; label: string }[] = [
 ];
 
 type Props = {
+  tabbed?: boolean;
   open: boolean;
   cwd: string;
   recents: RecentProject[];
@@ -66,6 +75,7 @@ type Props = {
 };
 
 export function SearchView({
+  tabbed = false,
   open,
   cwd,
   recents,
@@ -81,6 +91,8 @@ export function SearchView({
   onOpenProject,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const activeProjectSearchId = useRef<string | null>(null);
+  const activeSessionOwner = useRef<string | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
@@ -90,20 +102,25 @@ export function SearchView({
   const [files, setFiles] = useState(() => peekProjectFiles(cwd) ?? []);
   const [contentHits, setContentHits] = useState<AppSearchHit[]>([]);
   const [remoteHits, setRemoteHits] = useState<AppSearchHit[]>([]);
+  const [contentTruncated, setContentTruncated] = useState(false);
+  const [sessionTruncated, setSessionTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = query.trim();
+  const truncated = contentTruncated || sessionTruncated;
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || tabbed) return;
     setQuery("");
     setScope("all");
     setActive(0);
     setContentHits([]);
     setRemoteHits([]);
+    setContentTruncated(false);
+    setSessionTruncated(false);
     setError(null);
-  }, [open]);
+  }, [open, tabbed]);
 
   useEffect(() => {
     if (!open) return;
@@ -127,7 +144,7 @@ export function SearchView({
 
   useEffect(() => {
     if (!open) return;
-    if (!looksLikeProject(cwd)) {
+    if (!isLocalProject(cwd)) {
       setFiles([]);
       return;
     }
@@ -148,7 +165,7 @@ export function SearchView({
   );
   const fileHits = useMemo(
     () =>
-      trimmed && looksLikeProject(cwd)
+      trimmed && isLocalProject(cwd)
         ? hitsFromFileRanks(
             rankProjectFiles(files, trimmed, recentOpenedFiles(cwd), 40),
           )
@@ -185,6 +202,8 @@ export function SearchView({
     if (!open || !trimmed) {
       setRemoteHits([]);
       setContentHits([]);
+      setSessionTruncated(false);
+      setContentTruncated(false);
       setLoading(false);
       setError(null);
       return;
@@ -197,39 +216,63 @@ export function SearchView({
       const wantFiles = scope === "all" || scope === "files";
 
       if (wantSessions) {
+        const searchOwner = crypto.randomUUID();
+        activeSessionOwner.current = searchOwner;
         setLoading(true);
         jobs.push(
-          searchSessions({ query: trimmed })
+          searchSessions({ query: trimmed, searchOwner })
             .then((result) => {
-              if (!cancelled) setRemoteHits(hitsFromSessionSearch(result.hits));
+              if (cancelled) return;
+              setRemoteHits(hitsFromSessionSearch(result.hits));
+              setSessionTruncated(result.truncated);
             })
             .catch(() => {
-              if (!cancelled) setRemoteHits([]);
+              if (cancelled) return;
+              setRemoteHits([]);
+              setSessionTruncated(false);
+            })
+            .finally(() => {
+              if (activeSessionOwner.current === searchOwner) {
+                activeSessionOwner.current = null;
+              }
             }),
         );
       } else {
         setRemoteHits([]);
+        setSessionTruncated(false);
       }
 
-      if (wantFiles && looksLikeProject(cwd)) {
+      if (wantFiles && isLocalProject(cwd)) {
+        const searchId = crypto.randomUUID();
+        activeProjectSearchId.current = searchId;
         setLoading(true);
         jobs.push(
-          searchProject({ cwd, query: trimmed })
+          searchProject({
+            cwd,
+            query: trimmed,
+            searchId,
+          })
             .then((result) => {
-              if (!cancelled) {
-                setContentHits(hitsFromContentMatches(result.matches));
-                setError(null);
-              }
+              if (cancelled) return;
+              setContentHits(hitsFromContentMatches(result.matches));
+              setContentTruncated(result.truncated);
+              setError(null);
             })
             .catch((err: unknown) => {
-              if (!cancelled) {
-                setContentHits([]);
-                setError(err instanceof Error ? err.message : String(err));
+              if (cancelled) return;
+              setContentHits([]);
+              setContentTruncated(false);
+              setError(err instanceof Error ? err.message : String(err));
+            })
+            .finally(() => {
+              if (activeProjectSearchId.current === searchId) {
+                activeProjectSearchId.current = null;
               }
             }),
         );
       } else {
         setContentHits([]);
+        setContentTruncated(false);
       }
 
       void Promise.all(jobs).then(() => {
@@ -240,6 +283,16 @@ export function SearchView({
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      const searchOwner = activeSessionOwner.current;
+      activeSessionOwner.current = null;
+      if (searchOwner) {
+        void cancelSessionSearch(searchOwner).catch(() => undefined);
+      }
+      const searchId = activeProjectSearchId.current;
+      activeProjectSearchId.current = null;
+      if (searchId && isLocalProject(cwd)) {
+        void cancelProjectSearch(cwd, searchId).catch(() => undefined);
+      }
     };
   }, [cwd, open, scope, trimmed]);
 
@@ -320,6 +373,11 @@ export function SearchView({
 
   const empty = !trimmed;
   const noResults = !empty && hits.length === 0 && !loading;
+  const limitNotice = truncated ? (
+    <p className="px-2.5 py-1 text-[11px] text-content/45">
+      Results limited to the first matches
+    </p>
+  ) : null;
 
   return (
     <div
@@ -332,9 +390,9 @@ export function SearchView({
         className="flex h-10 shrink-0 select-none items-center border-b border-stroke"
         data-tauri-drag-region="deep"
       >
-        {IS_MAC && compactRail ? <div className="w-4 shrink-0" /> : null}
-        {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
-        {besideRail ? null : (
+        {!tabbed && IS_MAC && compactRail ? <div className="w-4 shrink-0" /> : null}
+        {!tabbed && IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
+        {tabbed || besideRail ? null : (
           <OverlayNav onBack={onClose} onToggleSidebar={onToggleSidebar} />
         )}
         <label className="flex min-w-0 flex-1 items-center gap-2 px-3 text-content/50">
@@ -360,7 +418,7 @@ export function SearchView({
             />
           ) : null}
         </label>
-        {!IS_MAC ? <WindowControls /> : null}
+        {!tabbed && !IS_MAC ? <WindowControls /> : null}
       </div>
 
       <div className="flex h-9 shrink-0 items-center gap-px border-b border-stroke px-3">
@@ -397,15 +455,21 @@ export function SearchView({
         ) : error && hits.length === 0 ? (
           <p className="px-2 py-1.5 text-[12px] text-red-400">{error}</p>
         ) : noResults ? (
-          <p className="px-2 py-1.5 text-[12px] text-content/50">No results</p>
+          <>
+            <p className="px-2 py-1.5 text-[12px] text-content/50">No results</p>
+            {limitNotice}
+          </>
         ) : (
-          <ResultList
-            hits={hits}
-            active={active}
-            query={trimmed}
-            onActive={setActive}
-            onOpen={openHit}
-          />
+          <>
+            {limitNotice}
+            <ResultList
+              hits={hits}
+              active={active}
+              query={trimmed}
+              onActive={setActive}
+              onOpen={openHit}
+            />
+          </>
         )}
       </div>
     </div>

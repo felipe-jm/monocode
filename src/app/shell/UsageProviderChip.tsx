@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import {
   clampUsedPercent,
+  DAILY_WINDOW_MINUTES,
+  formatExtraUsageBalance,
   formatRateLimitWindowChipLabel,
   formatResetCountdown,
   formatResetDuration,
@@ -14,7 +16,7 @@ import {
 import type { CodexRateLimitResetOutcome } from "../../features/providers/model/rateLimitsFetch";
 import { mascotPath, projectMascot } from "../../features/projects/model/projectMascots";
 import { projectKey, projectName } from "../../shared/lib/paths";
-import { HARNESS_TITLE } from "../../features/sessions/model/session";
+import { HARNESS_TITLE, type HarnessId } from "../../features/sessions/model/session";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -29,23 +31,58 @@ import {
   ProviderSignInPanel,
   type ProviderSignInState,
 } from "../../features/sessions/ui/ProviderSignInPanel";
-import type { ProviderAccount } from "../../features/providers/model/providerAccounts";
 import {
-  accountUsageRows,
-  useAccountsUsage,
-  type ActiveUsageAccount,
-} from "../../features/providers/model/accountsUsage";
+  supportsProviderAccounts,
+  type ProviderAccount,
+} from "../../features/providers/model/providerAccounts";
+import {
+  accountStatus,
+  accountUsageKey,
+  bestAlternativeAccount,
+  useProviderAccountUsage,
+} from "../../features/providers/model/accountUsage";
+import {
+  AccountStatusLabel,
+  barClass,
+  meterWindows,
+  UsageMeter,
+} from "../../features/providers/ui/ProviderAccountUsage";
+import { PrivateEmail } from "../../shared/ui/PrivateEmail";
 import {
   identityKey,
   identityOrganizationTag,
-  identitySubtitle,
   useProviderAccountIdentities,
   type ProviderAccountIdentity,
 } from "../../features/providers/model/providerAccountIdentity";
+import { ProviderAccountSubtitle } from "../../features/providers/ui/ProviderAccountSubtitle";
+import { useShowRemainingUsage } from "../../features/settings/model/displayPrefs";
 
 type UsageWindowEntry = {
   key: "session" | "weekly" | "monthly";
   window: RateLimitWindow;
+};
+
+/** `inset` is the footer on the inset layout's outer glass: pill-shaped chips. */
+export type UsageChipVariant = "footer" | "inset" | "composer";
+
+export const USAGE_CHIP_CLASSES: Record<UsageChipVariant, string> = {
+  footer:
+    "-mx-1 inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-1 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent active:scale-[0.97]",
+  inset:
+    "inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent active:scale-[0.97]",
+  composer:
+    "inline-flex h-6.5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-content/55 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-accent",
+};
+
+/** The refresh button beside the usage chips, per variant. */
+
+export const USAGE_REFRESH_CLASSES: Record<UsageChipVariant, string> = {
+  footer:
+    "grid size-4.5 shrink-0 place-items-center rounded-md text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-50",
+  inset:
+    "-ml-1 grid size-5 shrink-0 place-items-center rounded-full text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-50",
+  composer:
+    "grid size-6.5 shrink-0 place-items-center rounded-md text-content/40 transition-colors hover:bg-content/8 hover:text-content disabled:opacity-50",
 };
 
 type ResetActionState =
@@ -62,10 +99,12 @@ export function UsageProviderChip({
   onManageAccounts,
   onConsumeReset,
   onReconnect,
-  allAccounts = [],
+  presentation,
+  variant = "footer",
 }: {
   limits: ProviderRateLimits;
   now: number;
+  presentation?: { harness: HarnessId; label: string; sourceLabel?: string };
   project?: string;
   accounts?: ProviderAccount[];
   accountId?: string;
@@ -74,9 +113,10 @@ export function UsageProviderChip({
   onManageAccounts?: () => void;
   onConsumeReset?: (creditId?: string) => Promise<CodexRateLimitResetOutcome>;
   onReconnect?: () => Promise<void>;
-  /** Every MonoCode profile, listed with its usage under the active account. */
-  allAccounts?: ProviderAccount[];
+  /** `composer` matches the quiet tool buttons under a Mono's composer. */
+  variant?: UsageChipVariant;
 }) {
+  const showRemaining = useShowRemainingUsage();
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [accountView, setAccountView] = useState<"usage" | "accounts" | "add">(
@@ -108,9 +148,10 @@ export function UsageProviderChip({
     return best;
   }, null);
   const tooltip = windows
-    .map((entry) => rateLimitWindowTooltip(entry.window, now))
+    .map((entry) => rateLimitWindowTooltip(entry.window, now, showRemaining))
     .join(" · ");
-  const providerLabel = HARNESS_TITLE[limits.provider];
+  const providerLabel = presentation?.label ?? HARNESS_TITLE[limits.provider];
+  const iconHarness = presentation?.harness ?? limits.provider;
   const activeAccount = accounts.find((account) => account.id === accountId);
   const canManageAccounts = Boolean(onSelectAccount && onAddAccount);
   const activeAccountLabel = activeAccount?.label ?? "Removed account";
@@ -121,7 +162,27 @@ export function UsageProviderChip({
   const activeIdentity = activeAccount
     ? identities[identityKey(activeAccount)]
     : null;
-  const activeSubtitle = identitySubtitle(activeIdentity);
+  const accountProvider = supportsProviderAccounts(limits.provider)
+    ? limits.provider
+    : undefined;
+  const otherAccounts = accounts.filter((account) => account.id !== accountId);
+  const accountUsage = useProviderAccountUsage(
+    accounts.map((account) => account.id).join("|"),
+    {
+      provider: accountProvider,
+      enabled: open && Boolean(accountProvider) && otherAccounts.length > 0,
+    },
+  );
+  // The footer's own snapshot is fresher for the active account.
+  const usageFor = (account: ProviderAccount) =>
+    account.id === accountId
+      ? limits
+      : accountUsage.usage[accountUsageKey(account)];
+  const activeStatus = accountStatus(limits, now);
+  const suggestion =
+    activeStatus.tone === "exhausted" || activeStatus.tone === "low"
+      ? bestAlternativeAccount(otherAccounts, usageFor, now)
+      : null;
   const mascotProject = project ? projectName(project) : providerLabel;
   const appearanceKey = project ? projectKey(project) : mascotProject;
   const mascotName = resolveTabGroupMascot(
@@ -190,7 +251,7 @@ export function UsageProviderChip({
       <button
         ref={trigger}
         type="button"
-        className="-mx-1 inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent active:scale-[0.97]"
+        className={USAGE_CHIP_CLASSES[variant]}
         aria-label={`${providerLabel} usage details`}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -205,7 +266,7 @@ export function UsageProviderChip({
         }
         onClick={() => setOpen((value) => !value)}
       >
-        <HarnessIcon harness={limits.provider} className="size-3 shrink-0" />
+        <HarnessIcon harness={iconHarness} className="size-3 shrink-0" />
         {loading ? (
           <span className="animate-pulse text-content/35">···</span>
         ) : disconnected ? (
@@ -230,7 +291,11 @@ export function UsageProviderChip({
                     <span className="text-content/25">·</span>
                   ) : null}
                   <span>
-                    {formatUsagePercent(entry.window.usedPercent)}{" "}
+                    {formatUsagePercent(
+                      showRemaining
+                        ? 100 - clampUsedPercent(entry.window.usedPercent)
+                        : entry.window.usedPercent,
+                    )}{" "}
                     {formatRateLimitWindowChipLabel(entry.window, now)}
                   </span>
                 </span>
@@ -245,7 +310,7 @@ export function UsageProviderChip({
           side="top"
           align="start"
           gap={7}
-          width={300}
+          width={accountView === "accounts" ? 340 : 300}
           maxHeight={460}
           autoFocus
           onDismiss={dismiss}
@@ -260,6 +325,8 @@ export function UsageProviderChip({
               accounts={accounts}
               identities={identities}
               accountId={accountId ?? ""}
+              usageFor={usageFor}
+              now={now}
               onBack={() => setAccountView("usage")}
               onAdd={() => setAccountView("add")}
               onManage={
@@ -301,41 +368,54 @@ export function UsageProviderChip({
             <>
               <div className="flex items-start gap-2.5 px-1 pb-2.5 pt-0.5">
                 <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.06] ring-1 ring-inset ring-content/[0.07]">
-                  <HarnessIcon harness={limits.provider} className="size-4" />
+                  <HarnessIcon harness={iconHarness} className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
                   <h2 className="text-[13px] font-medium leading-4">
                     {providerLabel} usage
                   </h2>
-                  {limits.provider === "omp" && limits.account?.email ? (
-                    <p className="mt-0.5 truncate text-[10px] leading-4 text-content/55">
-                      omp account · {limits.account.email}
+                  {limits.provider === "omp" && limits.accountEmail ? (
+                    <p className="mt-0.5 flex min-w-0 gap-1 text-[10px] leading-4 text-content/55">
+                      <span className="shrink-0">omp account ·</span>
+                      <PrivateEmail
+                        key={limits.accountEmail}
+                        email={limits.accountEmail}
+                      />
                     </p>
                   ) : null}
                   <p className="mt-0.5 text-[10px] leading-4 text-content/40">
                     {updatedLabel(limits, now)}
                   </p>
+                  {presentation?.sourceLabel ? (
+                    <p className="mt-0.5 text-[10px] leading-4 text-content/55">
+                      {presentation.sourceLabel}
+                    </p>
+                  ) : null}
                   {canManageAccounts ? (
-                    <button
-                      type="button"
-                      className="mt-1 -ml-1 inline-flex max-w-full items-center gap-1 rounded px-1 py-0.5 text-[10px] text-content/55 hover:bg-content/10 hover:text-content"
-                      aria-label={`Switch ${providerLabel} account`}
-                      onClick={() => setAccountView("accounts")}
+                    <div
+                      className="pointer-events-none relative mt-1 -ml-1 inline-flex max-w-full items-center gap-1 rounded px-1 py-0.5 text-[10px] text-content/55"
                     >
+                      {/* Keep account switching separate from email revelation. */}
+                      <button
+                        type="button"
+                        className="pointer-events-auto absolute inset-0 rounded hover:bg-content/10 focus-visible:outline-2 focus-visible:outline-accent"
+                        aria-label={`Switch ${providerLabel} account`}
+                        onClick={() => setAccountView("accounts")}
+                      />
                       <span className="max-w-[60%] shrink-0 truncate">
                         {activeAccountLabel}
                       </span>
-                      {activeSubtitle ? (
-                        <span className="truncate text-content/35">
-                          {activeSubtitle}
-                        </span>
-                      ) : null}
+                      <ProviderAccountSubtitle
+                        key={activeAccount && identityKey(activeAccount)}
+                        identity={activeIdentity}
+                        className="text-content/35"
+                      />
                       <ChevronRight
                         className="size-2.5 shrink-0"
                         strokeWidth={1.75}
                         aria-hidden
                       />
-                    </button>
+                    </div>
                   ) : null}
                 </div>
                 {limits.status === "fetching" ? (
@@ -371,6 +451,30 @@ export function UsageProviderChip({
                 <EmptyUsageState limits={limits} loading={loading} />
               )}
 
+              {limits.extraUsageBalance != null ? (
+                <section className="mt-1.5 flex items-baseline justify-between gap-3 rounded-lg bg-content/[0.045] px-3 py-2.5 ring-1 ring-inset ring-content/[0.06]">
+                  <h3 className="text-[11px] font-medium text-content/65">
+                    Extra usage balance
+                  </h3>
+                  <span className="shrink-0 text-[11px] font-medium tabular-nums">
+                    {formatExtraUsageBalance(limits.extraUsageBalance)}
+                  </span>
+                </section>
+              ) : null}
+
+              {suggestion && onSelectAccount ? (
+                <SwitchSuggestion
+                  account={suggestion}
+                  limits={usageFor(suggestion)}
+                  exhausted={activeStatus.tone === "exhausted"}
+                  now={now}
+                  onSwitch={() => {
+                    onSelectAccount(suggestion.id);
+                    setOpen(false);
+                  }}
+                />
+              ) : null}
+
               {limits.provider === "codex" ? (
                 <BankedResets
                   limits={limits}
@@ -393,110 +497,11 @@ export function UsageProviderChip({
                   canUse={Boolean(onConsumeReset)}
                 />
               ) : null}
-
-              {allAccounts.length > 0 ? (
-                <AllAccountsUsage
-                  accounts={allAccounts}
-                  active={{
-                    chip: limits.provider,
-                    accountId,
-                    ompAccount: limits.account,
-                  }}
-                  activeLimits={limits.provider === "omp" ? null : limits}
-                  now={now}
-                />
-              ) : null}
             </>
           )}
         </Popover>
       ) : null}
     </>
-  );
-}
-
-/** Compact usage of every MonoCode profile, the one in use first. */
-function AllAccountsUsage({
-  accounts,
-  active,
-  activeLimits,
-  now,
-}: {
-  accounts: ProviderAccount[];
-  active: ActiveUsageAccount;
-  /** The chip's own snapshot, reused for its account instead of refetching. */
-  activeLimits: ProviderRateLimits | null;
-  now: number;
-}) {
-  const identities = useProviderAccountIdentities(accounts);
-  const usage = useAccountsUsage(accounts, true);
-  const emails = Object.fromEntries(
-    Object.entries(identities).map(([key, identity]) => [key, identity?.email]),
-  );
-  const rows = accountUsageRows(accounts, emails, active);
-  return (
-    <section className="mt-3 border-t border-content/[0.08] pt-2.5" aria-label="All accounts">
-      <h3 className="px-1 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">
-        All accounts
-      </h3>
-      <ul className="flex flex-col gap-1">
-        {rows.map(({ account, email, inUse }) => {
-          const key = identityKey(account);
-          const limits =
-            inUse && activeLimits?.provider === account.provider
-              ? activeLimits
-              : usage[key];
-          const windows = limits ? usageWindows(limits) : [];
-          return (
-            <li
-              key={key}
-              className="rounded-lg bg-content/[0.035] px-2.5 py-2 ring-1 ring-inset ring-content/[0.05]"
-              data-account-usage={key}
-            >
-              <div className="flex items-center gap-1.5">
-                <HarnessIcon harness={account.provider} className="size-3 shrink-0" />
-                <span className="min-w-0 truncate text-[11px] font-medium">
-                  {account.label}
-                </span>
-                {inUse ? (
-                  <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium text-accent">
-                    in use
-                  </span>
-                ) : null}
-              </div>
-              {email ? (
-                <p className="mt-0.5 truncate text-[10px] leading-4 text-content/40">
-                  {email}
-                </p>
-              ) : null}
-              <div className="mt-1 flex flex-col gap-0.5 text-[10px] leading-4 tabular-nums text-content/60">
-                {!limits || (limits.status === "fetching" && windows.length === 0) ? (
-                  <span className="animate-pulse text-content/35">Loading…</span>
-                ) : windows.length === 0 ? (
-                  <span className="text-content/40">
-                    {limits.error ?? emptyUsageLabel(limits)}
-                  </span>
-                ) : (
-                  windows.map((entry) => (
-                    <span key={entry.key} className="flex items-center gap-1.5">
-                      <span className="w-6 shrink-0 text-content/40">
-                        {entry.key === "session" ? "5h" : entry.key === "weekly" ? "7d" : "30d"}
-                      </span>
-                      <MiniBar usedPct={entry.window.usedPercent} />
-                      <span>{formatUsagePercent(entry.window.usedPercent)}</span>
-                      {entry.window.resetsAt != null ? (
-                        <span className="ml-auto text-content/35">
-                          {formatResetCountdown(entry.window.resetsAt - now)}
-                        </span>
-                      ) : null}
-                    </span>
-                  ))
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
   );
 }
 
@@ -532,6 +537,8 @@ function ProviderAccountPicker({
   accounts,
   identities,
   accountId,
+  usageFor,
+  now,
   onBack,
   onAdd,
   onManage,
@@ -541,11 +548,14 @@ function ProviderAccountPicker({
   accounts: ProviderAccount[];
   identities: Record<string, ProviderAccountIdentity | null>;
   accountId: string;
+  usageFor: (account: ProviderAccount) => ProviderRateLimits | undefined;
+  now: number;
   onBack: () => void;
   onAdd: () => void;
   onManage?: () => void;
   onSelect: (accountId: string) => void;
 }) {
+  const statusId = useId();
   return (
     <div>
       <div className="flex h-7 items-center gap-1">
@@ -562,39 +572,74 @@ function ProviderAccountPicker({
       <p className="mt-1 px-1 text-[10px] leading-4 text-content/40">
         Each conversation stays pinned to the account that started it.
       </p>
-      <div className="mt-2 flex flex-col gap-1" role="listbox">
+      <div
+        className="mt-2 flex flex-col gap-1"
+        role="group"
+        aria-label={`${providerLabel} accounts`}
+      >
         {accounts.map((account) => {
           const selected = account.id === accountId;
           const identity = identities[identityKey(account)];
           const orgTag = identityOrganizationTag(identity);
-          const subtitle = identitySubtitle(identity);
+          const usage = usageFor(account);
+          const meters = meterWindows(usage);
           return (
-            <button
+            <div
               key={account.id}
-              type="button"
-              role="option"
-              aria-selected={selected}
-              className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[11px] ring-1 ring-inset transition-colors ${
+              className={`pointer-events-none relative flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[11px] ring-1 ring-inset transition-colors ${
                 selected
                   ? "bg-accent/10 text-content ring-accent/20"
-                  : "bg-content/[0.035] text-content/70 ring-content/[0.06] hover:bg-content/[0.075] hover:text-content"
+                  : "bg-content/[0.035] text-content/70 ring-content/[0.06]"
               }`}
-              onClick={() => onSelect(account.id)}
             >
-              <span className="min-w-0 flex-1 py-1.5">
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate">{account.label}</span>
+              {/* A sibling target keeps the email button out of the selection button. */}
+              <button
+                type="button"
+                aria-pressed={selected}
+                aria-label={account.label}
+                aria-describedby={`${statusId}-${account.id}`}
+                className="pointer-events-auto absolute inset-0 rounded-lg hover:bg-content/[0.04] focus-visible:outline-2 focus-visible:outline-accent"
+                onClick={() => onSelect(account.id)}
+              />
+              <span className="min-w-0 flex-1 py-0.5">
+                <span className="flex min-w-0 items-baseline gap-1.5">
+                  <span className="shrink-0 truncate">{account.label}</span>
+                  <ProviderAccountSubtitle
+                    identity={identity}
+                    className="text-[10px] text-content/35"
+                  />
                   {orgTag ? (
-                    <span className="max-w-[8rem] shrink-0 truncate rounded bg-content/[0.07] px-1 text-[9px] leading-4 text-content/50">
+                    <span className="max-w-[6rem] shrink-0 truncate rounded bg-content/[0.07] px-1 text-[9px] leading-4 text-content/50">
                       {orgTag}
                     </span>
                   ) : null}
                 </span>
-                {subtitle ? (
-                  <span className="mt-0.5 block truncate text-[9px] text-content/40">
-                    {subtitle}
+                <span className="mt-1 flex min-w-0 items-center gap-3 text-[10px]">
+                  <span
+                    id={`${statusId}-${account.id}`}
+                    // Without meters, a long "unknown" reason truncates.
+                    className={meters.length > 0 ? "shrink-0" : "min-w-0"}
+                  >
+                    <AccountStatusLabel
+                      status={accountStatus(usage, now)}
+                      className="min-w-0"
+                    />
                   </span>
-                ) : null}
+                  {meters.length > 0 ? (
+                    <span className="flex min-w-0 flex-1 gap-2.5">
+                      {meters.map((entry) => (
+                        // Short "5h" / "wk" titles, as on the footer chip.
+                        <UsageMeter
+                          key={entry.title}
+                          title={formatWindowLabel(entry.window.windowMinutes)}
+                          window={entry.window}
+                          now={now}
+                          className="min-w-0 flex-1"
+                        />
+                      ))}
+                    </span>
+                  ) : null}
+                </span>
               </span>
               {selected ? (
                 <Check
@@ -603,7 +648,7 @@ function ProviderAccountPicker({
                   aria-hidden
                 />
               ) : null}
-            </button>
+            </div>
           );
         })}
       </div>
@@ -627,6 +672,44 @@ function ProviderAccountPicker({
         </button>
       ) : null}
     </div>
+  );
+}
+
+function SwitchSuggestion({
+  account,
+  limits,
+  exhausted,
+  now,
+  onSwitch,
+}: {
+  account: ProviderAccount;
+  limits: ProviderRateLimits | undefined;
+  exhausted: boolean;
+  now: number;
+  onSwitch: () => void;
+}) {
+  return (
+    <section className="mt-2 flex items-center gap-2.5 rounded-lg bg-content/[0.045] px-3 py-2.5 ring-1 ring-inset ring-content/[0.06]">
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] leading-4 text-content/45">
+          {exhausted ? "Out of usage" : "Running low"} · switch to
+        </p>
+        <p className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px]">
+          <span className="min-w-0 truncate font-medium">{account.label}</span>
+          <AccountStatusLabel
+            status={accountStatus(limits, now)}
+            className="text-[10px]"
+          />
+        </p>
+      </div>
+      <button
+        type="button"
+        className="h-7 shrink-0 rounded-md bg-content px-2.5 text-[11px] font-medium text-background-base transition-transform duration-150 hover:bg-content/85 active:scale-[0.97]"
+        onClick={onSwitch}
+      >
+        Switch
+      </button>
+    </section>
   );
 }
 
@@ -731,10 +814,14 @@ function UsageWindowCard({
   window: RateLimitWindow;
   now: number;
 }) {
+  const showRemaining = useShowRemainingUsage();
   const pct = clampUsedPercent(window.usedPercent);
-  const remaining = Math.max(0, Math.round(100 - pct));
+  const remaining = 100 - pct;
+  const shown = showRemaining ? remaining : pct;
   const title =
-    kind === "session"
+    kind === "session" && window.windowMinutes === DAILY_WINDOW_MINUTES
+      ? "Daily limit"
+      : kind === "session"
       ? "5-hour limit"
       : kind === "weekly"
         ? "Weekly limit"
@@ -746,24 +833,27 @@ function UsageWindowCard({
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-[11px] font-medium text-content/65">{title}</h3>
         <span className="shrink-0 text-[11px] font-medium tabular-nums">
-          {formatUsagePercent(pct)} used
+          {formatUsagePercent(shown)} {showRemaining ? "remaining" : "used"}
         </span>
       </div>
       <div
         className="mt-2 h-1.5 overflow-hidden rounded-full bg-content/10"
         role="progressbar"
-        aria-label={`${title} used`}
+        aria-label={`${title} ${showRemaining ? "remaining" : "used"}`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(pct)}
+        aria-valuenow={Math.round(shown)}
       >
         <span
           className={`block h-full rounded-full ${barClass(pct)}`}
-          style={{ width: `${pct}%` }}
+          style={{ width: `${shown}%` }}
         />
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-3 text-[10px] leading-4 text-content/40">
-        <span className="tabular-nums">{remaining}% remaining</span>
+        <span className="tabular-nums">
+          {formatUsagePercent(showRemaining ? pct : remaining)}{" "}
+          {showRemaining ? "used" : "remaining"}
+        </span>
         <span
           className="truncate text-right tabular-nums"
           title={
@@ -1118,6 +1208,7 @@ function emptyUsageLabel(limits: ProviderRateLimits): string {
 }
 
 function MiniBar({ usedPct }: { usedPct: number }) {
+  const showRemaining = useShowRemainingUsage();
   const pct = clampUsedPercent(usedPct);
   return (
     <span
@@ -1126,14 +1217,8 @@ function MiniBar({ usedPct }: { usedPct: number }) {
     >
       <span
         className={`block h-full rounded-full ${barClass(pct)}`}
-        style={{ width: `${pct}%` }}
+        style={{ width: `${showRemaining ? 100 - pct : pct}%` }}
       />
     </span>
   );
-}
-
-function barClass(pct: number): string {
-  if (pct >= 90) return "bg-red-400";
-  if (pct >= 80) return "bg-amber-400";
-  return "bg-content/45";
 }

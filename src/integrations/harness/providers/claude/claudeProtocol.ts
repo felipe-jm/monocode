@@ -5,9 +5,16 @@ import type {
   ToolPreview,
   TurnMetrics,
 } from "../../../../features/sessions/model/session";
-import { attachmentPathText } from "../../../../features/sessions/model/attachments";
+import {
+  attachmentPathText,
+  promptText,
+} from "../../../../features/sessions/model/attachments";
 import { parseResetTimestamp } from "../../../../features/providers/model/rateLimits";
-import { isTaskListToolName, taskListFromToolInput } from "../../../../features/sessions/model/taskList";
+import {
+  isTaskListToolName,
+  normalizeTaskListStatus,
+  taskListFromToolInput,
+} from "../../../../features/sessions/model/taskList";
 import {
   questionPromptTitle,
   questionsFromUnknown,
@@ -187,7 +194,10 @@ export function buildClaudeUserMessage(input: {
   attachments?: Attachment[];
   effort?: string | null;
 }): Record<string, unknown> {
-  const text = applyClaudePromptEffortPrefix(input.text.trim(), input.effort);
+  const text = applyClaudePromptEffortPrefix(
+    promptText(input.text, input.attachments ?? []),
+    input.effort,
+  );
   const content: Array<Record<string, unknown>> = [];
   if (text) content.push({ type: "text", text });
   for (const attachment of input.attachments ?? []) {
@@ -492,8 +502,10 @@ export function turnStatusFromResult(rec: Record<string, unknown>): {
 
 /**
  * A `rate_limit_event` that refuses requests, with when its window resets.
- * `null` once requests are allowed again, or while extra usage is paying for
- * them and the turn goes on.
+ * `null` once requests are allowed again, while extra usage is paying for
+ * them and the turn goes on, or when only the extra-usage pool is refused:
+ * fast mode bills to it, and Claude Code drops to standard speed and goes on
+ * under the plan.
  */
 export function usageLimitFromRateLimitEvent(
   rec: Record<string, unknown>,
@@ -501,6 +513,7 @@ export function usageLimitFromRateLimitEvent(
   const info = asRecord(rec.rate_limit_info);
   if (stringField(info, "status") !== "rejected") return null;
   if (info?.isUsingOverage === true) return null;
+  if (stringField(info, "rateLimitType") === "overage") return null;
   const resetsAt = parseResetTimestamp(info?.resetsAt);
   return resetsAt != null ? { resetsAt } : {};
 }
@@ -589,6 +602,21 @@ export function inputJsonDeltaFromEvent(
 export function isSubagentMessage(rec: Record<string, unknown>): boolean {
   const parent = rec.parent_tool_use_id;
   return typeof parent === "string" && parent.length > 0;
+}
+
+/**
+ * On resume, the CLI re-reports every background task the session started
+ * that it considers unfinished — even ones already stopped and reported —
+ * and answers each with an empty, zero-turn result. That result belongs to
+ * no turn, so it must not end the one MonoCode is waiting on.
+ */
+export function isReplayedTaskNotificationResult(
+  rec: Record<string, unknown>,
+): boolean {
+  return (
+    stringField(asRecord(rec.origin), "kind") === "task-notification" &&
+    rec.num_turns === 0
+  );
 }
 
 export function isAgentTaskType(taskType: string | undefined): boolean {
@@ -928,9 +956,69 @@ export function isTodoTool(toolName: string): boolean {
   return isTaskListToolName(toolName);
 }
 
+/**
+ * Newer Claude Code builds replace TodoWrite with incremental task tools:
+ * TaskCreate adds one item and TaskUpdate changes one item by id.
+ */
+export function isClaudeTaskTool(toolName: string): boolean {
+  return ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"].includes(
+    toolName.trim(),
+  );
+}
+
+/**
+ * Fold one successful TaskCreate/TaskUpdate call into the session's task map.
+ * Returns true when the visible list changed. TaskCreate only learns its id
+ * from the result text ("Task #3 created successfully: ...").
+ */
+export function applyClaudeTaskTool(
+  tasks: Map<string, TaskListItem>,
+  toolName: string,
+  input: Record<string, unknown>,
+  resultText: string,
+): boolean {
+  const name = toolName.trim();
+  if (name === "TaskCreate") {
+    const text = [input.subject, input.activeForm, input.description]
+      .find(
+        (value): value is string =>
+          typeof value === "string" && !!value.trim(),
+      )
+      ?.trim();
+    const id = resultText.match(/Task #([^\s:]+)/)?.[1];
+    if (!text || !id) return false;
+    tasks.set(id, { id, text, status: "pending" });
+    return true;
+  }
+  if (name === "TaskUpdate") {
+    const rawId = input.taskId;
+    const id =
+      typeof rawId === "number" && Number.isFinite(rawId)
+        ? String(rawId)
+        : typeof rawId === "string"
+          ? rawId.trim().replace(/^#/, "")
+          : "";
+    const current = id ? tasks.get(id) : undefined;
+    if (!current) return false;
+    const status = stringField(input, "status")?.trim().toLowerCase();
+    if (status === "deleted") {
+      tasks.delete(id);
+      return true;
+    }
+    const subject = stringField(input, "subject")?.trim();
+    tasks.set(id, {
+      ...current,
+      ...(subject ? { text: subject } : {}),
+      ...(status ? { status: normalizeTaskListStatus(status) } : {}),
+    });
+    return true;
+  }
+  return false;
+}
+
 export function toolKindFromName(toolName: string): string {
   const normalized = toolName.toLowerCase();
-  if (isTodoTool(toolName)) return "tasks";
+  if (isTodoTool(toolName) || isClaudeTaskTool(toolName)) return "tasks";
   if (
     normalized.includes("bash") ||
     normalized.includes("command") ||

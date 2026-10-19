@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { loadRateLimits } from "./rateLimitsCache";
+import { cachedDevinIdentity } from "./rateLimitsFetch";
 import type {
   ProviderAccount,
   ProviderAccountProvider,
@@ -17,6 +19,11 @@ export async function readProviderAccountIdentity(
   provider: ProviderAccountProvider,
   accountId: string,
 ): Promise<ProviderAccountIdentity | null> {
+  if (provider === "devin") {
+    // Devin keeps no identity on disk; its usage read carries one.
+    await loadRateLimits("devin", accountId);
+    return cachedDevinIdentity();
+  }
   try {
     return await invoke<ProviderAccountIdentity | null>(
       "provider_account_identity",
@@ -25,14 +32,6 @@ export async function readProviderAccountIdentity(
   } catch {
     return null;
   }
-}
-
-/** "Max · user@example.com", or whichever half is known. */
-export function identitySubtitle(
-  identity: ProviderAccountIdentity | null | undefined,
-): string | null {
-  const parts = [identity?.plan, identity?.email].filter(Boolean);
-  return parts.length ? parts.join(" · ") : null;
 }
 
 /** Org chip text: "Personal" for Claude's default "<name>'s Organization". */

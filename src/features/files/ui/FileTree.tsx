@@ -4,7 +4,6 @@ import {
   FilePlus,
   FolderPlus,
   FoldVertical,
-  GitCompare,
   Search,
 } from "../../../shared/ui/icons";
 import {
@@ -27,7 +26,6 @@ import {
   type NameIssue,
 } from "../model/fileName";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
-import { formatInteger } from "../../../shared/lib/numbers";
 import {
   loadShowExcludedFiles,
   subscribeShowExcludedFiles,
@@ -48,6 +46,7 @@ import {
   subscribeDirsChanged,
 } from "../model/fileTree";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import { dragPointToClient } from "../../../shared/lib/dragPoint";
 import {
   basename,
@@ -61,10 +60,9 @@ import {
   type FsEntry,
 } from "../../../platform/tauri/fs";
 import { displayPath, parentPath, rebasePath } from "../../../shared/lib/paths";
-import { IS_MAC, IS_WIN, MOD } from "../../../platform/tauri/platform";
+import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../../platform/tauri/platform";
 import type { OpenFileFn } from "../../search/model/search";
 import type { GitStatusMap } from "../../source-control/hooks/useGitFileStatuses";
-import { useProjectDiffStats } from "../../source-control/hooks/useProjectDiffStats";
 import {
   emitExplorerFilePointerDrag,
   setGrabbing,
@@ -72,16 +70,18 @@ import {
 } from "../../../shared/lib/drag";
 import { ExplorerMenu, type ExplorerMenuItem } from "./ExplorerMenu";
 import { FileTypeIcon } from "./FileTypeIcon";
+import { PaneHeader } from "../../../shared/ui/PaneHeader";
 
 const GIT_STATUS_COLOR: Record<string, string> = {
   modified: "text-amber-400",
-  added: "text-emerald-400",
-  untracked: "text-emerald-400",
-  deleted: "text-red-400",
+  added: "text-diff-add-fg",
+  untracked: "text-diff-add-fg",
+  deleted: "text-diff-del-fg",
 };
 
 type Props = {
   cwd: string;
+  compactHeader?: boolean;
   /** Display identity for the root when it differs from the physical folder. */
   rootLabel?: string;
   onOpenFile: OpenFileFn;
@@ -90,8 +90,6 @@ type Props = {
   onFileDeleted?: (path: string) => void;
   onSearch?: () => void;
   gitStatuses?: GitStatusMap;
-  onShowSourceControl?: () => void;
-  sourceControlActive?: boolean;
 };
 
 type Creating = { id: number; parent: string; isDir: boolean };
@@ -164,6 +162,13 @@ async function copyText(text: string) {
   }
 }
 
+/** Non-Latin layouts put the local letter in `key`, so fall back to the physical key. */
+function shortcutLetter(e: ReactKeyboardEvent): string {
+  const key = e.key.toLowerCase();
+  if (/^[a-z]$/.test(key)) return key;
+  return /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : key;
+}
+
 function explorerItems(
   target: MenuTarget,
   clip: Clip | null,
@@ -205,7 +210,12 @@ function explorerItems(
       disabled: target.isRoot,
     },
     { kind: "sep" },
-    { kind: "item", id: "copy-path", label: "Copy Path" },
+    {
+      kind: "item",
+      id: "copy-path",
+      label: "Copy Path",
+      shortcut: `${MOD}${SHIFT}C`,
+    },
     { kind: "item", id: "copy-relative-path", label: "Copy Relative Path" },
     { kind: "sep" },
     {
@@ -241,6 +251,7 @@ function explorerItems(
 // intact unless file-tree props, local state, or subscriptions actually change.
 export const FileTree = memo(function FileTree({
   cwd,
+  compactHeader = false,
   rootLabel,
   onOpenFile,
   onOpenTerminal,
@@ -248,8 +259,6 @@ export const FileTree = memo(function FileTree({
   onFileDeleted,
   onSearch,
   gitStatuses,
-  sourceControlActive = false,
-  onShowSourceControl,
 }: Props) {
   const [expanded, setExpanded] = useState(() => loadExpanded(cwd));
   const [selectedPath, setSelectedPath] = useState(() => loadSelected(cwd));
@@ -703,19 +712,150 @@ export const FileTree = memo(function FileTree({
     openMenu({ path: cwd, isDir: true, isRoot: true }, e.clientX, e.clientY);
   };
 
+  const visibleRows = () =>
+    Array.from(
+      rootRef.current?.querySelectorAll<HTMLElement>(
+        "[data-explorer-root], [role='treeitem']",
+      ) ?? [],
+    );
+
+  const focusRow = (row: HTMLElement | undefined) => {
+    if (!row) return;
+    onSelect(row.title);
+    row.focus({ preventScroll: true });
+    row.scrollIntoView?.({ block: "nearest" });
+  };
+
+  const typeahead = useRef({ text: "", at: 0 });
+
+  // VS Code-style list navigation. Rows are read from the DOM so the order
+  // always matches what's rendered (folders first, excluded files hidden).
+  const onNavigationKey = (
+    e: ReactKeyboardEvent<HTMLDivElement>,
+    path: string,
+    isDir: boolean,
+  ): boolean => {
+    if (e.altKey || e.ctrlKey || (e.metaKey && e.key !== "ArrowDown")) {
+      return false;
+    }
+    const rows = visibleRows();
+    const index = rows.findIndex((row) => row.title === path);
+    const open = path === cwd ? rootOpen : expanded.has(path);
+    const pageSize = () => {
+      const scroller = rootRef.current?.querySelector(".overflow-y-auto");
+      const rowHeight = rows[rows.length - 1]?.offsetHeight || 30;
+      return Math.max(
+        1,
+        Math.floor((scroller?.clientHeight ?? 0) / rowHeight) - 1,
+      );
+    };
+    const step = (delta: number) =>
+      focusRow(
+        rows[
+          index < 0
+            ? delta > 0
+              ? 0
+              : rows.length - 1
+            : Math.min(rows.length - 1, Math.max(0, index + delta))
+        ],
+      );
+    const activate = (keepFocus: boolean) => {
+      if (isDir) {
+        toggle(path);
+        return;
+      }
+      onOpenFile(path, undefined, { exact: true });
+      if (keepFocus) {
+        const row = rows[index];
+        requestAnimationFrame(() => row?.focus({ preventScroll: true }));
+      }
+    };
+
+    switch (e.key) {
+      case "ArrowDown":
+        // Cmd+Down opens, as in VS Code on macOS.
+        if (e.metaKey) activate(false);
+        else step(1);
+        return true;
+      case "ArrowUp":
+        step(-1);
+        return true;
+      case "PageDown":
+        step(pageSize());
+        return true;
+      case "PageUp":
+        step(-pageSize());
+        return true;
+      case "Home":
+        focusRow(rows[0]);
+        return true;
+      case "End":
+        focusRow(rows[rows.length - 1]);
+        return true;
+      case "ArrowRight":
+        if (!isDir) return true;
+        if (!open) toggle(path);
+        else if (rows[index + 1] && parentPath(rows[index + 1].title) === path)
+          focusRow(rows[index + 1]);
+        return true;
+      case "ArrowLeft":
+        if (isDir && open) toggle(path);
+        else if (path !== cwd)
+          focusRow(rows.find((row) => row.title === parentPath(path)));
+        return true;
+      case "Enter":
+        activate(false);
+        return true;
+      case " ":
+        activate(true);
+        return true;
+    }
+
+    // Type a name prefix to jump to the next matching row.
+    if (e.metaKey || e.key.length !== 1 || e.key === " ") return false;
+    const now = performance.now();
+    const buffer = typeahead.current;
+    buffer.text = now - buffer.at > 700 ? e.key : buffer.text + e.key;
+    buffer.at = now;
+    // Repeating one letter cycles through its matches instead of narrowing.
+    const lower = buffer.text.toLowerCase();
+    const cycling = [...lower].every((ch) => ch === lower[0]);
+    const needle = cycling ? lower[0] : lower;
+    const start = cycling ? index + 1 : Math.max(index, 0);
+    const ordered = [...rows.slice(start), ...rows.slice(0, start)];
+    const match = ordered.find(
+      (row) =>
+        row.title !== cwd &&
+        basename(row.title).toLowerCase().startsWith(needle),
+    );
+    if (match) focusRow(match);
+    return true;
+  };
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest("input")) return;
     if (
       (e.target as HTMLElement).closest("button") &&
-      !(e.target as HTMLElement).closest("[role='treeitem']")
+      !(e.target as HTMLElement).closest(
+        "[role='treeitem'], [data-explorer-root]",
+      )
     ) {
       return;
     }
     const path = selectedPath ?? cwd;
     const isRoot = path === cwd;
     const isDir = isDirAt(cwd, path);
+    if (onNavigationKey(e, path, isDir)) {
+      e.preventDefault();
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
-    const key = e.key.toLowerCase();
+    const key = shortcutLetter(e);
+    if (mod && !e.altKey && e.shiftKey && key === "c") {
+      e.preventDefault();
+      void copyText(path);
+      return;
+    }
     if (mod && !e.altKey && !e.shiftKey && key === "c") {
       if (isRoot) return;
       e.preventDefault();
@@ -810,6 +950,14 @@ export const FileTree = memo(function FileTree({
   }, []);
 
   useEffect(() => {
+    if (!cwd.startsWith(REMOTE_PATH_PREFIX)) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) notifyDirsChanged();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [cwd]);
+
+  useEffect(() => {
     const hit = peekDir(cwd);
     if (hit) {
       setChildren(hit);
@@ -865,9 +1013,14 @@ export const FileTree = memo(function FileTree({
         onKeyDown={onKeyDown}
         onContextMenu={onBackgroundMenu}
       >
-        <div
-          className="flex h-9 shrink-0 items-center gap-px overflow-visible border-b border-stroke px-2"
-          onContextMenu={(e) => e.stopPropagation()}
+        <PaneHeader
+          compact={compactHeader}
+          role="toolbar"
+          aria-label="Explorer"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
         >
           <HeaderIcon label="New File" onClick={() => startCreate(false)}>
             <FilePlus className="size-3.5" strokeWidth={1.75} />
@@ -895,17 +1048,11 @@ export const FileTree = memo(function FileTree({
               <Search className="size-3.5" strokeWidth={1.75} />
             </HeaderIcon>
           ) : null}
-          {onShowSourceControl ? (
-            <FileTreeDiffButton
-              cwd={cwd}
-              active={sourceControlActive}
-              onClick={onShowSourceControl}
-            />
-          ) : null}
-        </div>
+        </PaneHeader>
         <div className="flex h-8 shrink-0 items-center">
           <button
             type="button"
+            data-explorer-root
             aria-expanded={rootOpen}
             title={cwd}
             onClick={() => {
@@ -921,7 +1068,7 @@ export const FileTree = memo(function FileTree({
                 e.clientY,
               );
             }}
-            className={`flex min-w-0 flex-1 items-center gap-1 h-full pl-2 text-left ${
+            className={`flex min-w-0 flex-1 items-center gap-1 h-full pl-2 text-left outline-none focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent/40 ${
               dragOverPath === cwd ? "bg-selection" : ""
             }`}
           >
@@ -1002,60 +1149,6 @@ function HeaderIcon({
       }`}
     >
       {children}
-    </button>
-  );
-}
-
-function FileTreeDiffButton({
-  cwd,
-  active,
-  onClick,
-}: {
-  cwd: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  const enabled = Boolean(cwd) && cwd !== "~";
-  const stats = useProjectDiffStats(cwd, enabled);
-  const files = stats?.files ?? 0;
-  const additions = stats?.additions ?? 0;
-  const deletions = stats?.deletions ?? 0;
-  const empty = files <= 0 && additions <= 0 && deletions <= 0;
-  const label = empty
-    ? active
-      ? "Hide changes"
-      : "Show changes"
-    : [
-        `${files} ${files === 1 ? "file" : "files"} changed`,
-        additions > 0 ? `+${formatInteger(additions)}` : "",
-        deletions > 0 ? `-${formatInteger(deletions)}` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-  const badge = files > 99 ? "99+" : String(files);
-
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onClick}
-      className={`relative flex h-6 min-w-0 flex-1 items-center justify-center self-center rounded-md ${
-        active
-          ? "bg-selection text-content"
-          : "text-content/50 hover:bg-content/5 hover:text-content"
-      }`}
-    >
-      <span className="relative">
-        <GitCompare className="size-3.5" strokeWidth={1.75} />
-        {files > 0 ? (
-          <span className="pointer-events-none absolute -top-1.5 -right-2 grid min-h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[7px] font-semibold leading-none text-white tabular-nums">
-            {badge}
-          </span>
-        ) : null}
-      </span>
     </button>
   );
 }
@@ -1215,7 +1308,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
           }}
           onContextMenu={(e) => onItemContextMenu(entry, e)}
           style={{ paddingLeft: 8 + depth * 12 }}
-          className={`flex h-7.5 w-full cursor-default items-center gap-1 pr-2 text-left text-[14px] leading-none data-[explorer-dragging]:opacity-50 ${
+          className={`flex h-7.5 w-full cursor-default items-center gap-1 pr-2 text-left text-[14px] outline-none focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent/40 leading-none data-[explorer-dragging]:opacity-50 ${
             selected
               ? "bg-selection text-content"
               : "text-content hover:bg-content/5"
@@ -1236,7 +1329,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
             <FileTypeIcon name={entry.name} isDir={entry.isDir} isOpen={open} />
           </span>
           <span
-            className={`min-w-0 truncate ${
+            className={`min-w-0 truncate leading-label ${
               entry.ignored ? "italic text-content/50" : (gitColor ?? "")
             }`}
           >
@@ -1257,7 +1350,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   );
 }
 
-function NameRow({
+export function NameRow({
   depth,
   isDir,
   initial = "",

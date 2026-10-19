@@ -1,9 +1,109 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  runtimeProviderBinaryPath,
+  type ConfigurableBinaryProvider,
+} from "../../../features/providers/model/providerBinaryPaths";
+
+/** Process I/O is supplied by the desktop or a headless host. Provider
+ * protocols never need to know which process owns their children. */
+export interface ChildBackend {
+  invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  listen<T>(
+    event: string,
+    handler: (event: { payload: T }) => void,
+  ): Promise<UnlistenFn>;
+}
+
+let backend: ChildBackend | undefined;
+
+export function configureChildBackend(next: ChildBackend): void {
+  if (bridge || users)
+    throw new Error("Configure the child backend before starting the bridge");
+  backend = next;
+}
+
+export function hasHeadlessChildBackend(): boolean {
+  return backend !== undefined;
+}
+
+/** Provider-owned transcript files are read on the machine running the child. */
+export function readHarnessTextFile(path: string): Promise<string> {
+  return invoke<string>(backend ? "harness_read_text_file" : "read_text_file", {
+    path,
+  });
+}
+
+export function prepareMonoCodexStore(
+  providerAccountId?: string,
+  threadId?: string,
+): Promise<{ home: string; hasThread: boolean }> {
+  return invoke("codex_mono_store_prepare", { providerAccountId, threadId });
+}
+
+export function copyMonoCodexThreads(
+  providerAccountId: string | undefined,
+  threadId: string,
+  paths: string[],
+  sqliteHome?: string,
+): Promise<void> {
+  return invoke("codex_mono_store_copy", {
+    providerAccountId,
+    threadId,
+    paths,
+    sqliteHome,
+  });
+}
+
+/** Copy a native Claude or Codex conversation into another account's home,
+ * so that account resumes the same provider session id. */
+export function transferProviderSession(
+  provider: "claude" | "codex",
+  fromAccountId: string | undefined,
+  toAccountId: string | undefined,
+  providerSessionId: string,
+): Promise<void> {
+  return invoke("provider_session_transfer", {
+    provider,
+    fromAccountId,
+    toAccountId,
+    providerSessionId,
+  });
+}
+
+export function restoreMonoCodexAgentState(
+  providerAccountId: string | undefined,
+  threadId: string,
+): Promise<void> {
+  return invoke("codex_mono_store_restore_agent_state", {
+    providerAccountId,
+    threadId,
+  });
+}
+
+function invoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  return backend
+    ? backend.invoke<T>(command, args)
+    : tauriInvoke<T>(command, args);
+}
+
+function listen<T>(
+  event: string,
+  handler: (event: { payload: T }) => void,
+): Promise<UnlistenFn> {
+  return backend ? backend.listen(event, handler) : tauriListen(event, handler);
+}
 
 type LinePayload = { sessionId: string; line: string };
+// The desktop batches a frame's stdout lines and SSE events into one event;
+// the remote host still sends them one at a time.
+type LinesPayload = LinePayload | { sessionId: string; lines: string[] };
 type ExitPayload = { sessionId: string; code: number | null; pid?: number };
-type SsePayload = { sessionId: string; data: string };
+type SsePayload =
+  { sessionId: string; data: string } | { sessionId: string; events: string[] };
 type SseEndPayload = { sessionId: string; error?: string | null };
 
 type LineHandler = (line: string) => void;
@@ -18,6 +118,11 @@ const stderrHandlers = new Map<string, LineHandler>();
 const sseHandlers = new Map<string, SseHandler>();
 const sseEndHandlers = new Map<string, SseEndHandler>();
 const sseBuffer = new Map<string, string[]>();
+// Output is broadcast to every window. Only ids this window spawned or opened
+// may buffer while unwatched; anything else would be held until the bridge
+// is torn down, since nothing here ever watches or unwatches it.
+const ownedChildren = new Set<string>();
+const ownedSse = new Set<string>();
 const livePid = new Map<string, number>();
 const pendingExit = new Map<
   string,
@@ -70,14 +175,18 @@ function ensureBridge() {
   bridgeAttempt = attempt;
   const installation = Promise.all([
     register(
-      listen<LinePayload>("harness-stdout", (event) => {
-        const { sessionId, line } = event.payload;
-        const handler = lineHandlers.get(sessionId);
-        if (handler) {
-          handler(line);
-          return;
+      listen<LinesPayload>("harness-stdout", (event) => {
+        const { payload } = event;
+        const { sessionId } = payload;
+        const lines = "lines" in payload ? payload.lines : [payload.line];
+        for (const line of lines) {
+          // A handler may detach mid-batch; later lines follow the old path.
+          const handler = lineHandlers.get(sessionId);
+          if (handler) handler(line);
+          else if (ownedChildren.has(sessionId)) {
+            pushBounded(lineBuffer, sessionId, line);
+          }
         }
-        pushBounded(lineBuffer, sessionId, line);
       }),
     ),
     register(
@@ -106,13 +215,16 @@ function ensureBridge() {
     ),
     register(
       listen<SsePayload>("harness-sse", (event) => {
-        const { sessionId, data } = event.payload;
-        const handler = sseHandlers.get(sessionId);
-        if (handler) {
-          handler(data);
-          return;
+        const { payload } = event;
+        const { sessionId } = payload;
+        const events = "events" in payload ? payload.events : [payload.data];
+        for (const data of events) {
+          const handler = sseHandlers.get(sessionId);
+          if (handler) handler(data);
+          else if (ownedSse.has(sessionId)) {
+            pushBounded(sseBuffer, sessionId, data);
+          }
         }
-        pushBounded(sseBuffer, sessionId, data);
       }),
     ),
     register(
@@ -145,11 +257,11 @@ function teardownBridge() {
   sseHandlers.clear();
   sseEndHandlers.clear();
   sseBuffer.clear();
+  ownedChildren.clear();
+  ownedSse.clear();
   livePid.clear();
   pendingExit.clear();
-  void pending
-    ?.then((fns) => fns.forEach((fn) => fn()))
-    .catch(() => undefined);
+  void pending?.then((fns) => fns.forEach((fn) => fn())).catch(() => undefined);
 }
 
 export function startHarnessBridge(): () => void {
@@ -211,6 +323,7 @@ export function unwatchChild(sessionId: string) {
   lineHandlers.delete(sessionId);
   exitHandlers.delete(sessionId);
   lineBuffer.delete(sessionId);
+  ownedChildren.delete(sessionId);
   stderrHandlers.delete(sessionId);
   pendingExit.delete(sessionId);
 }
@@ -231,6 +344,7 @@ export function unwatchSse(sessionId: string) {
   sseHandlers.delete(sessionId);
   sseEndHandlers.delete(sessionId);
   sseBuffer.delete(sessionId);
+  ownedSse.delete(sessionId);
 }
 
 export async function spawnChild(
@@ -239,15 +353,27 @@ export async function spawnChild(
   args: string[],
   cwd: string,
   account?: { provider: "claude" | "codex"; id: string },
+  binaryProvider?: ConfigurableBinaryProvider,
+  codexStore?: "mono",
+  /** `devin acp` only: start with an approval rule for every edit. */
+  devinAskEdits?: boolean,
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
+  ownedChildren.add(sessionId);
+  const binaryPath = binaryProvider
+    ? runtimeProviderBinaryPath(binaryProvider)
+    : undefined;
   const pid = await invoke<number>("harness_spawn", {
     sessionId,
     command,
     args,
     cwd,
     account,
+    binaryProvider,
+    binaryPath,
+    ...(codexStore ? { codexStore } : {}),
+    ...(devinAskEdits ? { devinAskEdits } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
@@ -278,52 +404,112 @@ export function killAllChildren(): Promise<void> {
   sseHandlers.clear();
   sseEndHandlers.clear();
   sseBuffer.clear();
+  ownedChildren.clear();
+  ownedSse.clear();
   livePid.clear();
   pendingExit.clear();
   return invoke("harness_kill_all");
 }
 
-export function resolveCursorBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_cursor");
+type ResolvedHarnessBinary = { path: string; args?: string[] };
+
+async function resolveHarnessBinary(
+  provider: ConfigurableBinaryProvider,
+  binaryPath?: string | null,
+): Promise<ResolvedHarnessBinary> {
+  const configuredPath =
+    binaryPath === undefined
+      ? runtimeProviderBinaryPath(provider)
+      : binaryPath?.trim();
+  if (configuredPath) {
+    return invoke("harness_resolve_configured", {
+      provider,
+      binaryPath: configuredPath,
+    });
+  }
+  const command: Record<ConfigurableBinaryProvider, string> = {
+    claude: "harness_resolve_claude",
+    codex: "harness_resolve_codex",
+    cursor: "harness_resolve_cursor",
+    grok: "harness_resolve_grok",
+    opencode: "harness_resolve_opencode",
+    pi: "harness_resolve_pi",
+    omp: "harness_resolve_omp",
+    fx: "harness_resolve_fx",
+    hermes: "harness_resolve_hermes",
+    antigravity: "harness_resolve_antigravity",
+    devin: "harness_resolve_devin",
+  };
+  return invoke(command[provider]);
 }
 
-export function resolveCodexBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_codex");
+export function resolveCursorBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("cursor", binaryPath);
 }
 
-export function resolveOpenCodeBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_opencode");
+export function resolveCodexBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("codex", binaryPath);
 }
 
-export function resolveClaudeBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_claude");
+export function resolveOpenCodeBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("opencode", binaryPath);
 }
 
-export function resolvePiBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_pi");
+export function resolveClaudeBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("claude", binaryPath);
 }
 
-export function resolveOmpBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_omp");
+export function resolvePiBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("pi", binaryPath);
 }
 
-export function resolveFxBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_fx");
+export function resolveOmpBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("omp", binaryPath);
 }
 
-export function resolveGrokBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_grok");
+export function resolveFxBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("fx", binaryPath);
 }
 
-export function resolveHermesBinary(): Promise<{ path: string }> {
-  return invoke("harness_resolve_hermes");
+export function resolveGrokBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("grok", binaryPath);
 }
 
-export function resolveAntigravityBinary(): Promise<{
-  path: string;
-  args: string[];
-}> {
-  return invoke("harness_resolve_antigravity");
+export function resolveHermesBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("hermes", binaryPath);
+}
+
+export function resolveDevinBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string }> {
+  return resolveHarnessBinary("devin", binaryPath);
+}
+
+export function resolveAntigravityBinary(
+  binaryPath?: string | null,
+): Promise<{ path: string; args: string[] }> {
+  return resolveHarnessBinary("antigravity", binaryPath) as Promise<{
+    path: string;
+    args: string[];
+  }>;
 }
 
 export function freeHarnessPort(): Promise<number> {
@@ -345,6 +531,7 @@ export function openHarnessSse(
   url: string,
   headers?: Record<string, string>,
 ): Promise<void> {
+  ownedSse.add(sessionId);
   return invoke("harness_sse_open", { sessionId, url, headers });
 }
 
@@ -353,10 +540,70 @@ export function closeHarnessSse(sessionId: string): Promise<void> {
   return invoke("harness_sse_close", { sessionId });
 }
 
+export type HarnessBinaryInspection = {
+  path: string;
+  version?: string;
+  error?: string;
+};
+
+export function inspectHarnessBinary(
+  provider: ConfigurableBinaryProvider,
+  binaryPath?: string | null,
+): Promise<HarnessBinaryInspection> {
+  return resolveHarnessBinary(provider, binaryPath).then(async (resolved) => {
+    if (provider === "antigravity") {
+      return { path: resolved.path, version: "ACP server" };
+    }
+    try {
+      const version = (
+        await execChild(
+          resolved.path,
+          ["--version"],
+          undefined,
+          provider,
+          binaryPath,
+        )
+      ).trim();
+      return /\d+\.\d+\.\d+/.test(version)
+        ? { path: resolved.path, version }
+        : { path: resolved.path, error: "CLI returned no valid version." };
+    } catch (error) {
+      return {
+        path: resolved.path,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+/** Runs the CLI's own self-update against the binary MonoCode uses. */
+export async function updateHarnessCli(
+  provider: ConfigurableBinaryProvider,
+): Promise<void> {
+  const resolved = await resolveHarnessBinary(provider);
+  await invoke("harness_update", {
+    command: resolved.path,
+    binaryProvider: provider,
+    binaryPath: runtimeProviderBinaryPath(provider),
+  });
+}
+
 export function execChild(
   command: string,
   args: string[],
   cwd?: string,
+  binaryProvider?: ConfigurableBinaryProvider,
+  binaryPathOverride?: string | null,
 ): Promise<string> {
-  return invoke("harness_exec", { command, args, cwd });
+  const binaryPath =
+    binaryPathOverride === undefined && binaryProvider
+      ? runtimeProviderBinaryPath(binaryProvider)
+      : binaryPathOverride;
+  return invoke("harness_exec", {
+    command,
+    args,
+    cwd,
+    binaryProvider,
+    binaryPath,
+  });
 }

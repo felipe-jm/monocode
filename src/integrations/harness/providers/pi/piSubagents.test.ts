@@ -66,7 +66,61 @@ describe("Pi subagent snapshots", () => {
         kind: "tool",
         status: "failed",
         text: "Read auth.ts",
+        // The step's only readable copy of why it failed.
+        detail: "Missing file",
       }),
+    ]);
+  });
+
+  it("leaves out punctuation-only prose between a subagent's tool calls", () => {
+    const result = {
+      details: {
+        results: [
+          {
+            agent: "task",
+            task: "Read the demo files",
+            exitCode: 0,
+            messages: [
+              {
+                role: "assistant",
+                content: [
+                  { type: "text", text: "." },
+                  {
+                    type: "toolCall",
+                    id: "read-1",
+                    name: "read",
+                    arguments: { path: "README.md" },
+                  },
+                ],
+              },
+              {
+                role: "assistant",
+                content: [
+                  { type: "text", text: " … " },
+                  {
+                    type: "toolCall",
+                    id: "read-2",
+                    name: "read",
+                    arguments: { path: "index.ts" },
+                  },
+                ],
+              },
+              {
+                role: "assistant",
+                content: [{ type: "text", text: "Both files read." }],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const session = apply(piSubagentEvents("spawn", {}, result, true));
+    expect(
+      session.blocks[0].agentRun?.steps.map((step) => [step.kind, step.text]),
+    ).toEqual([
+      ["tool", "Read README.md"],
+      ["tool", "Read index.ts"],
+      ["message", "Both files read."],
     ]);
   });
 

@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderPlus,
+  Internet,
   Inbox,
   MoreHorizontal,
   Pin,
@@ -13,7 +14,14 @@ import {
   Settings,
   Zap,
 } from "../../shared/ui/icons";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
@@ -26,11 +34,9 @@ import {
   PROJECT_RAIL_WIDTH_MIN,
   saveProjectRailWidth,
 } from "../../features/settings/model/appearance";
-import {
-  basename,
-  type GitDiffStats,
-} from "../../platform/tauri/fs";
-import { IS_MAC, MOD } from "../../platform/tauri/platform";
+import { basename, type GitDiffStats } from "../../platform/tauri/fs";
+import { MOD } from "../../platform/tauri/platform";
+import { useTrafficLightsVisible } from "../../platform/tauri/useTrafficLightsVisible";
 import { formatInteger } from "../../shared/lib/numbers";
 import { pathKey, projectKey, projectName } from "../../shared/lib/paths";
 import {
@@ -61,6 +67,7 @@ import {
   loadProjectGroups,
   projectGroupColor,
   projectGroupIdForPath,
+  reorderProjectGroups,
   updateProjectGroup,
   type ProjectGroup,
 } from "../../features/projects/model/projectGroups";
@@ -80,9 +87,30 @@ import { notificationMuteStatus } from "../../features/notifications/ui/notifica
 import { useProjectNotificationPreferences } from "../../features/notifications/hooks/useProjectNotificationPreferences";
 import { useNotificationProjects } from "../../features/notifications/hooks/useNotificationProjects";
 import { GithubStarPrompt } from "./GithubStarPrompt";
+import { Popover } from "../../shared/ui/Popover";
+import { OPEN_REMOTE_PROJECT_EVENT } from "../../features/connections/model/connections";
+import {
+  useRemoteMachineOnline,
+  useRemoteMachines,
+} from "../../features/connections/model/connections";
+import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
 import { useProjectMenu } from "./useProjectMenu";
+import { MonoRailSection, type MonoRailProps } from "./MonoRailSection";
 
 type Props = {
+  visible?: boolean;
+  /** The inset layout's title bar carries the traffic lights and navigation. */
+  headerless?: boolean;
+  /**
+   * A width shared with the pane this rail stands in for, as the inset
+   * layout's Settings does with the sidebar: shown at it, resized into it.
+   */
+  sharedWidth?: {
+    width: number;
+    min: number;
+    max: () => number;
+    onCommit: (width: number) => void;
+  };
   cwd: string;
   recents: RecentProject[];
   inboxUnseen?: boolean;
@@ -117,9 +145,14 @@ type Props = {
   updateNotice?: InstalledUpdate | null;
   onOpenWhatsNew?: (version: string) => void;
   onDismissUpdate?: () => void;
+  /** The Monos section above the projects; absent while Monos are off. */
+  monos?: MonoRailProps;
 };
 
 export function ProjectRail({
+  visible = true,
+  headerless = false,
+  sharedWidth,
   cwd,
   recents,
   inboxUnseen = false,
@@ -154,15 +187,26 @@ export function ProjectRail({
   updateNotice = null,
   onOpenWhatsNew,
   onDismissUpdate,
+  monos,
 }: Props) {
+  const trafficLightsVisible = useTrafficLightsVisible();
   const resize = useDragResize({
-    min: PROJECT_RAIL_WIDTH_MIN,
-    max: () =>
-      Math.min(PROJECT_RAIL_WIDTH_MAX, Math.floor(window.innerWidth * 0.35)),
+    min: sharedWidth?.min ?? PROJECT_RAIL_WIDTH_MIN,
+    max:
+      sharedWidth?.max ??
+      (() =>
+        Math.min(PROJECT_RAIL_WIDTH_MAX, Math.floor(window.innerWidth * 0.35))),
     defaultWidth: PROJECT_RAIL_WIDTH_DEFAULT,
-    initial: loadProjectRailWidth(),
-    onCommit: saveProjectRailWidth,
+    initial: sharedWidth?.width ?? loadProjectRailWidth(),
+    onCommit: sharedWidth?.onCommit ?? saveProjectRailWidth,
   });
+  // The rail stays mounted while hidden, so it picks the shared width up
+  // each time it is shown, before it paints.
+  const sharedWidthValue = sharedWidth?.width;
+  const { setPaneWidth } = resize;
+  useLayoutEffect(() => {
+    if (visible && sharedWidthValue != null) setPaneWidth(sharedWidthValue);
+  }, [visible, sharedWidthValue, setPaneWidth]);
   const [railOrder, setRailOrder] = useState(loadProjectRailOrder);
   const [pinnedPaths, setPinnedPaths] = useState(loadPinnedProjects);
   const [groupLabels, setGroupLabels] = useState(loadTabGroupLabels);
@@ -198,6 +242,11 @@ export function ProjectRail({
     onOpenNotificationSettings,
     onOpen: () => setInboxMenu(null),
   });
+  useEffect(() => {
+    if (visible) return;
+    projectMenu.dismiss();
+    setInboxMenu(null);
+  }, [visible]);
   const notificationPreferences = useProjectNotificationPreferences();
   const allProjects = useMemo(
     () => collectRailProjects(recents, cwd),
@@ -309,31 +358,46 @@ export function ProjectRail({
     saveProjectRailOrder(next);
   };
 
+  // Another view in the main area means no project row is the current one.
+  const otherViewActive =
+    searchActive ||
+    inboxActive ||
+    notesActive ||
+    automationsActive ||
+    !!monos?.activeId;
   const pinnedIds = sections.pinned.map((item) => item.path);
   const projectIds = groupedProjectSections.ungrouped.map((item) => item.path);
+  const groupIds = groupedProjectSections.grouped.map(({ group }) => group.id);
+  const groupSortable = useAnimatedReorder(groupIds, reorderProjectGroups, "y");
   const pinnedSortable = useAnimatedReorder(pinnedIds, onReorderPinned, "y");
-  const projectSortable = useAnimatedReorder(projectIds, onReorderProjects, "y");
+  const projectSortable = useAnimatedReorder(
+    projectIds,
+    onReorderProjects,
+    "y",
+  );
   return (
     <nav
       ref={resize.setPaneRef}
       aria-label="Projects"
-      className="sidebar-glass relative flex shrink-0 flex-col border-r border-stroke"
+      className={`sidebar-glass relative shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
     >
-      <div
-        className="flex h-10 shrink-0 select-none items-center pr-1.5"
-        data-tauri-drag-region="deep"
-      >
-        {IS_MAC ? <div className="w-[78px] shrink-0" /> : null}
-        <DevModeSlot />
-        <TabVisitNav
-          canGoBack={canGoBack}
-          canGoForward={canGoForward}
-          onGoBack={onGoBack}
-          onGoForward={onGoForward}
-          onTogglePanel={settingsOpen ? undefined : onTogglePanel}
-          panelActive
-        />
-      </div>
+      {headerless ? null : (
+        <div
+          className="flex h-10 shrink-0 select-none items-center pr-1.5"
+          data-tauri-drag-region="deep"
+        >
+          {trafficLightsVisible ? <div className="w-[78px] shrink-0" /> : null}
+          <DevModeSlot />
+          <TabVisitNav
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            onGoBack={onGoBack}
+            onGoForward={onGoForward}
+            onTogglePanel={settingsOpen ? undefined : onTogglePanel}
+            panelActive
+          />
+        </div>
+      )}
 
       {settingsOpen ? (
         <SettingsNav
@@ -394,6 +458,8 @@ export function ProjectRail({
             }}
             className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
           >
+            {monos ? <MonoRailSection {...monos} /> : null}
+
             {sections.pinned.length > 0 ? (
               <ProjectSection
                 label="Pinned"
@@ -402,14 +468,10 @@ export function ProjectRail({
                 cwd={cwd}
                 busy={busy}
                 done={done}
+                statsEnabled={visible}
                 sortable={pinnedSortable}
                 pinned
-                searchActive={
-                  searchActive ||
-                  inboxActive ||
-                  notesActive ||
-                  automationsActive
-                }
+                searchActive={otherViewActive}
                 onSelect={onSelectProject}
                 onTogglePin={toggleProjectPin}
                 onContextMenu={onProjectContextMenu}
@@ -433,17 +495,14 @@ export function ProjectRail({
                     <ProjectGroupSection
                       key={group.id}
                       group={group}
+                      groupSortable={groupSortable}
                       items={items}
                       muteStatuses={muteStatuses}
                       cwd={cwd}
                       busy={busy}
                       done={done}
-                      searchActive={
-                        searchActive ||
-                        inboxActive ||
-                        notesActive ||
-                        automationsActive
-                      }
+                      statsEnabled={visible}
+                      searchActive={otherViewActive}
                       onSelect={onSelectProject}
                       onTogglePin={toggleProjectPin}
                       onContextMenu={onProjectContextMenu}
@@ -482,11 +541,10 @@ export function ProjectRail({
               cwd={cwd}
               busy={busy}
               done={done}
+              statsEnabled={visible}
               sortable={projectSortable}
               pinned={false}
-              searchActive={
-                searchActive || inboxActive || notesActive || automationsActive
-              }
+              searchActive={otherViewActive}
               onSelect={onSelectProject}
               onTogglePin={toggleProjectPin}
               onContextMenu={onProjectContextMenu}
@@ -524,8 +582,8 @@ export function ProjectRail({
           </div>
         </>
       )}
-      {projectMenu.element}
-      {inboxMenu ? (
+      {visible ? projectMenu.element : null}
+      {visible && inboxMenu ? (
         <InboxNotificationMenu
           {...inboxMenu}
           projectPaths={[...allProjects.keys()]}
@@ -544,7 +602,11 @@ export function ProjectRail({
         aria-valuemin={PROJECT_RAIL_WIDTH_MIN}
         aria-valuemax={PROJECT_RAIL_WIDTH_MAX}
         className={`absolute inset-y-0 -right-px z-10 w-1.5 cursor-col-resize touch-none ${
-          resize.dragging ? "bg-content/15" : "hover:bg-content/10"
+          headerless
+            ? ""
+            : resize.dragging
+              ? "bg-content/15"
+              : "hover:bg-content/10"
         }`}
         onPointerDown={resize.onPointerDown}
         onDoubleClick={resize.onDoubleClick}
@@ -564,6 +626,7 @@ function ProjectSection({
   cwd,
   busy,
   done,
+  statsEnabled,
   sortable,
   pinned,
   searchActive,
@@ -585,6 +648,7 @@ function ProjectSection({
   cwd: string;
   busy: Set<string>;
   done: Set<string>;
+  statsEnabled: boolean;
   sortable: SortableHandle;
   pinned: boolean;
   searchActive: boolean;
@@ -615,6 +679,7 @@ function ProjectSection({
             selected={!searchActive && sameProjectPath(item.path, cwd)}
             busy={hasProjectPath(item.path, busy)}
             done={hasProjectPath(item.path, done)}
+            statsEnabled={statsEnabled}
             pinned={pinned}
             sortable={sortable}
             onSelect={onSelect}
@@ -644,7 +709,8 @@ function ProjectSectionHeader({
 }) {
   return (
     <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
-      <span className="min-w-0 flex-1 truncate px-1 text-xs text-content/50">
+      {/* As tall as the header buttons, so every section header matches. */}
+      <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/50">
         {label}
       </span>
       {onAddGroup ? (
@@ -661,28 +727,21 @@ function ProjectSectionHeader({
           <FolderPlus className="size-3.5" strokeWidth={1.75} />
         </button>
       ) : null}
-      {onAdd ? (
-        <button
-          type="button"
-          title="Open project"
-          aria-label="Open project"
-          onClick={onAdd}
-          className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content"
-        >
-          <Plus className="size-3.5" strokeWidth={1.75} />
-        </button>
-      ) : null}
+      {onAdd ? <AddProjectButton onOpenFolder={onAdd} /> : null}
     </div>
   );
 }
 
+/** One collapsible group in the rail; its header row is the drag handle for reordering groups. */
 function ProjectGroupSection({
   group,
+  groupSortable,
   items,
   muteStatuses,
   cwd,
   busy,
   done,
+  statsEnabled,
   searchActive,
   onSelect,
   onTogglePin,
@@ -698,11 +757,13 @@ function ProjectGroupSection({
   groupMascots,
 }: {
   group: ProjectGroup;
+  groupSortable: SortableHandle;
   items: RecentProject[];
   muteStatuses: ReadonlyMap<string, string | null>;
   cwd: string;
   busy: Set<string>;
   done: Set<string>;
+  statsEnabled: boolean;
   searchActive: boolean;
   onSelect: (path: string) => void;
   onTogglePin: (path: string) => void;
@@ -731,7 +792,8 @@ function ProjectGroupSection({
 
   return (
     <div
-      className={`shrink-0 overflow-hidden rounded-md ${
+      ref={(el) => groupSortable.setItemRef(group.id, el)}
+      className={`reorder-item relative shrink-0 overflow-hidden rounded-md ${
         expanded ? "mb-1.5 bg-content/5" : ""
       }`}
       data-project-group={group.id}
@@ -739,10 +801,15 @@ function ProjectGroupSection({
       aria-label={group.name}
     >
       <div
-        className="project-reorder-item group relative flex h-8 items-stretch rounded-md px-2 opacity-65 cursor-default"
+        className="project-reorder-item group relative flex h-8 touch-none items-stretch rounded-md px-2 opacity-65 cursor-default"
+        onPointerDown={(event) =>
+          groupSortable.onItemPointerDown(group.id, event)
+        }
         onContextMenu={(event) => {
           event.preventDefault();
-          event.currentTarget.querySelector<HTMLButtonElement>("button")?.focus();
+          event.currentTarget
+            .querySelector<HTMLButtonElement>("button")
+            ?.focus();
           openMenu(event.currentTarget, event.clientX, event.clientY);
         }}
       >
@@ -751,15 +818,18 @@ function ProjectGroupSection({
           aria-expanded={!group.collapsed}
           aria-label={`${group.name}, ${countLabel}`}
           title={`${group.name} · ${countLabel}`}
-          onClick={onToggleCollapsed}
-          className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[:focus-visible]:pr-6"
+          onClick={() => {
+            if (groupSortable.consumeClick()) return;
+            onToggleCollapsed();
+          }}
+          className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[button:focus-visible]:pr-6"
         >
           <div className="grid size-4 shrink-0 place-items-center">
             {group.collapsed ? (
               <>
                 <span
                   data-group-mascot
-                  className="grid size-4 place-items-center group-hover:hidden group-has-[:focus-visible]:hidden"
+                  className="grid size-4 place-items-center group-hover:hidden group-has-[button:focus-visible]:hidden"
                 >
                   <ProjectMascot
                     project={group.id}
@@ -770,7 +840,7 @@ function ProjectGroupSection({
                 </span>
                 <ChevronRight
                   data-group-chevron
-                  className="hidden size-3.5 group-hover:block group-has-[:focus-visible]:block"
+                  className="hidden size-3.5 group-hover:block group-has-[button:focus-visible]:block"
                   strokeWidth={1.75}
                 />
               </>
@@ -795,7 +865,7 @@ function ProjectGroupSection({
             event.stopPropagation();
             openMenu(event.currentTarget);
           }}
-          className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[:focus-visible]:grid"
+          className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[button:focus-visible]:grid"
         >
           <MoreHorizontal className="size-4" strokeWidth={1.75} />
         </button>
@@ -810,6 +880,7 @@ function ProjectGroupSection({
               selected={!searchActive && sameProjectPath(item.path, cwd)}
               busy={hasProjectPath(item.path, busy)}
               done={hasProjectPath(item.path, done)}
+              statsEnabled={statsEnabled}
               pinned={false}
               sortable={sortable}
               onSelect={onSelect}
@@ -840,6 +911,7 @@ function ProjectCard({
   selected,
   busy,
   done,
+  statsEnabled,
   pinned,
   sortable,
   onSelect,
@@ -857,6 +929,7 @@ function ProjectCard({
   selected: boolean;
   busy: boolean;
   done: boolean;
+  statsEnabled: boolean;
   pinned: boolean;
   sortable: SortableHandle;
   onSelect: (path: string) => void;
@@ -875,24 +948,53 @@ function ProjectCard({
   const name = resolveTabGroupLabel(key, groupLabels, fallbackName);
   const logoPath = resolveTabGroupLogo(key, groupLogos);
   const color = resolveTabGroupColor(key, groupColors, groupCustomColors, seed);
-  const diffEnabled = Boolean(item.path) && item.path !== "~";
+  const diffEnabled = statsEnabled && Boolean(item.path) && item.path !== "~";
   const stats = useProjectDiffStats(item.path, diffEnabled);
   const files = stats?.files ?? 0;
   const additions = stats?.additions ?? 0;
   const deletions = stats?.deletions ?? 0;
   const hasChanges = files > 0 || additions > 0 || deletions > 0;
   const showDone = done && !busy;
-  const cardTitle = projectCardTitle(item.path, name, stats, busy, showDone);
-  const cardAriaLabel = projectCardAriaLabel(name, stats, busy, showDone);
+  const remote = remoteProjectFor(item.path);
+  const { machines } = useRemoteMachines(!!remote);
+  const machine = remote
+    ? machines.find((entry) => entry.environmentId === remote.environmentId)
+    : undefined;
+  const online = useRemoteMachineOnline(machine?.id);
+  const connection = !remote
+    ? ""
+    : !machine
+      ? "Machine not connected on this computer"
+      : online === undefined
+        ? "Connecting"
+        : online
+          ? "Connected"
+          : "Reconnecting";
+  const cardTitle = projectCardTitle(
+    remote
+      ? `${remote.cwd} on ${machine?.name ?? "another machine"} (${connection})`
+      : item.path,
+    name,
+    stats,
+    busy,
+    showDone,
+  );
+  const cardAriaLabel = projectCardAriaLabel(
+    machine ? `${name} on ${machine.name}` : name,
+    stats,
+    busy,
+    showDone,
+  );
+  const labelClassName = machine
+    ? "min-w-0 max-w-[75%] shrink-0 truncate text-sm font-medium leading-tight"
+    : cardNameClassName;
 
   return (
     <div
       ref={(el) => sortable.setItemRef(item.path, el)}
       data-selected={selected || undefined}
       className={`reorder-item project-reorder-item group relative flex touch-none items-stretch rounded-md px-2 h-8 ${
-        selected
-          ? "bg-selection-strong text-content"
-          : "opacity-65"
+        selected ? "bg-selection-strong text-content" : "opacity-65"
       } cursor-default`}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
@@ -913,7 +1015,8 @@ function ProjectCard({
         if (
           event.key !== "ContextMenu" &&
           !(event.shiftKey && event.key === "F10")
-        ) return;
+        )
+          return;
         event.preventDefault();
         event.stopPropagation();
         const rect = event.currentTarget.getBoundingClientRect();
@@ -923,9 +1026,11 @@ function ProjectCard({
       <button
         type="button"
         title={muteStatus ? `${cardTitle}\n${muteStatus}` : cardTitle}
-        aria-label={muteStatus ? `${cardAriaLabel}, ${muteStatus}` : cardAriaLabel}
+        aria-label={
+          muteStatus ? `${cardAriaLabel}, ${muteStatus}` : cardAriaLabel
+        }
         aria-current={selected ? "true" : undefined}
-        className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[:focus-visible]:pr-6"
+        className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[button:focus-visible]:pr-6"
       >
         <div className="project-card-logo grid size-4 shrink-0 place-items-center transition-opacity group-hover:opacity-0">
           {logoPath && !busy ? (
@@ -946,11 +1051,11 @@ function ProjectCard({
         </div>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           {busy ? (
-            <Shimmer as="span" duration={1.4} className={cardNameClassName}>
+            <Shimmer as="span" duration={1.4} className={labelClassName}>
               {name}
             </Shimmer>
           ) : (
-            <span className={cardNameClassName}>{name}</span>
+            <span className={labelClassName}>{name}</span>
           )}
           {showDone ? (
             <span
@@ -959,10 +1064,34 @@ function ProjectCard({
               className="size-1.5 shrink-0 rounded-full bg-accent"
             />
           ) : null}
+          {machine ? (
+            <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-content/45">
+              {machine.name}
+            </span>
+          ) : null}
         </span>
         {hasChanges ? (
-          <span className="project-card-stats shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden">
+          <span className="project-card-stats shrink-0 group-hover:hidden group-has-[button:focus-visible]:hidden">
             <ProjectDiffStat additions={additions} deletions={deletions} />
+          </span>
+        ) : null}
+        {remote ? (
+          <span
+            role="img"
+            aria-label={connection}
+            className="relative grid size-4 shrink-0 place-items-center text-content/45"
+          >
+            <Internet
+              className="size-3"
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
+            <span
+              aria-hidden="true"
+              className={`absolute right-0 bottom-0 size-1.5 rounded-full ring-1 ring-background-base ${
+                online ? "bg-emerald-400" : "bg-content/35"
+              }`}
+            />
           </span>
         ) : null}
         {muteStatus ? (
@@ -972,7 +1101,11 @@ function ProjectCard({
             title={muteStatus}
             className="grid size-4 shrink-0 place-items-center text-amber-400"
           >
-            <BellOff className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+            <BellOff
+              className="size-3.5"
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
           </span>
         ) : null}
       </button>
@@ -992,7 +1125,7 @@ function ProjectCard({
             event.detail === 0 ? rect.bottom : event.clientY,
           );
         }}
-        className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[:focus-visible]:grid"
+        className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[button:focus-visible]:grid"
       >
         <MoreHorizontal className="size-4" strokeWidth={1.75} />
       </button>
@@ -1047,10 +1180,10 @@ function ProjectDiffStat({
       className="flex shrink-0 items-center gap-1 font-sans text-[11px] font-semibold tabular-nums"
     >
       {additions > 0 ? (
-        <span className="text-emerald-400">+{formatInteger(additions)}</span>
+        <span className="text-diff-add-fg">+{formatInteger(additions)}</span>
       ) : null}
       {deletions > 0 ? (
-        <span className="text-red-400">-{formatInteger(deletions)}</span>
+        <span className="text-diff-del-fg">-{formatInteger(deletions)}</span>
       ) : null}
     </span>
   );
@@ -1101,4 +1234,64 @@ function projectCardAriaLabel(
   if (additions > 0) parts.push(`+${formatInteger(additions)}`);
   if (deletions > 0) parts.push(`-${formatInteger(deletions)}`);
   return parts.join(", ");
+}
+
+/** Adds a folder on this computer, or one on a connected machine. */
+function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const item =
+    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content/80 hover:bg-content/8 hover:text-content";
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        title="Open project"
+        aria-label="Open project"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content"
+      >
+        <Plus className="size-3.5" strokeWidth={1.75} />
+      </button>
+      {open ? (
+        <Popover
+          anchor={anchor}
+          align="start"
+          width={230}
+          onDismiss={() => setOpen(false)}
+          role="menu"
+          aria-label="Open project"
+          className="p-1"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              onOpenFolder();
+            }}
+          >
+            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Open folder…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new Event(OPEN_REMOTE_PROJECT_EVENT));
+            }}
+          >
+            <Internet className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Open folder on a machine…
+          </button>
+        </Popover>
+      ) : null}
+    </>
+  );
 }

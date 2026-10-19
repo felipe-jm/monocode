@@ -1,40 +1,63 @@
 use tauri::Manager;
 
 mod account_identity;
+mod artifacts;
 mod automations;
 mod azure_devops;
+mod background_work;
 mod chat_background;
 mod checkpoint;
+mod codex_mono_store;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod devin_config;
+mod devin_usage;
 #[cfg(target_os = "macos")]
 mod dictation;
 mod external_editor;
 mod fs;
 mod gitlab;
 mod harness;
+mod harness_updates;
 mod inbox_media;
 mod jira;
+mod jsonc;
 mod linear;
 mod link_preview;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_background;
+mod mcp;
 mod menu;
+mod mobile_access;
+mod mobile_router;
+mod mono;
+#[cfg(target_os = "macos")]
+mod mono_chat;
+mod mono_transcript;
 mod notes;
 mod notifications;
 mod pasteboard;
+mod pi_usage;
 mod project_logo;
+mod provider_session_transfer;
 mod pty;
 #[cfg(target_os = "macos")]
 mod quick_composer;
 mod rate_limits;
 mod reminders;
+mod remote;
+mod remote_ssh;
+mod resources;
 mod search;
 mod session_store;
 mod skills;
+pub mod ssh_askpass;
+mod tool_detail;
+#[cfg(target_os = "macos")]
+mod trackpad_zoom;
 #[cfg(target_os = "windows")]
 mod tray;
 mod window;
@@ -195,7 +218,18 @@ fn set_dock_badge(
 }
 
 #[tauri::command]
-fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
+fn set_trackpad_zoom_enabled(
+    #[allow(unused_variables)] window: tauri::WebviewWindow,
+    #[allow(unused_variables)] enabled: bool,
+) {
+    #[cfg(target_os = "macos")]
+    trackpad_zoom::set_enabled(&window, enabled);
+}
+
+// Async so the window is built off the main thread. Building it from a sync
+// command deadlocks WebView2 on Windows and leaves the new window blank.
+#[tauri::command]
+async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
     window::open_new_window(&app)
 }
 
@@ -205,28 +239,53 @@ fn should_request_quit(code: Option<i32>) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        let version = context.package_info().version.to_string();
+        let bundle_version = context
+            .config()
+            .bundle
+            .macos
+            .bundle_version
+            .as_deref()
+            .unwrap_or(&version);
+        macos::ensure_dev_bundle(&version, bundle_version);
+    }
+    #[cfg(target_os = "macos")]
+    macos::register_spellcheck_default();
     #[cfg(windows)]
     windows::initialize().expect("Failed to initialize Windows process safety");
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Closing to the tray leaves the process running without a taskbar entry,
+    // so a second launch must reopen it instead of starting another instance.
+    // Registered first so the duplicate exits before any setup runs.
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        let _ = window::show_hidden_or_open_new(app);
+    }));
+    let app = builder
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_denylist(&[
-                    window::QUICK_COMPOSER_LABEL,
-                    window::QUICK_COMPOSER_GIT_LABEL,
-                ])
+                .with_filter(window::is_workspace_window)
                 .build(),
         )
+        .register_uri_scheme_protocol(artifacts::HTML_SCHEME, |ctx, request| {
+            artifacts::serve_html(ctx.app_handle(), &request)
+        })
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
+        .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .setup(|app| {
             harness::reap_orphaned_harness_processes();
             session_store::init(app.handle())?;
             control::init(app.handle())?;
+            mobile_access::init(app.handle())?;
             reminders::init(app.handle());
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
@@ -237,6 +296,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 quick_composer::init(app.handle())?;
+                mono_chat::init(app.handle())?;
                 macos::install_dock_menu(app.handle());
                 if let Some(window) = app.get_webview_window("main") {
                     macos::install(&window);
@@ -255,6 +315,23 @@ pub fn run() {
             menu::dispatch(app, event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            mobile_access::mobile_status,
+            mobile_access::mobile_configure,
+            mobile_access::mobile_invite,
+            mobile_access::mobile_cancel_invite,
+            mobile_access::mobile_revoke,
+            mobile_access::mobile_publish,
+            mobile_access::mobile_reply,
+            mobile_access::mobile_push,
+            remote::remote_machines,
+            remote::remote_connect,
+            remote::remote_disconnect,
+            remote::remote_request,
+            remote::remote_ssh_begin,
+            remote::remote_ssh_reconnect,
+            remote::remote_ssh_poll,
+            remote::remote_ssh_answer,
+            remote::remote_ssh_cancel,
             control::control_enable,
             control::control_disable,
             control::control_reply,
@@ -309,6 +386,7 @@ pub fn run() {
             fs::git_stage_all,
             fs::git_unstage_all,
             fs::git_commit,
+            fs::git_locate_files,
             fs::git_head_message,
             fs::git_staged_context,
             fs::git_push,
@@ -385,6 +463,7 @@ pub fn run() {
             fs::move_path,
             fs::reveal_path,
             pasteboard::clipboard_file_paths,
+            pasteboard::clipboard_image,
             pasteboard::copy_file_to_clipboard,
             fs::clone_repo,
             fs::read_file_preview,
@@ -392,27 +471,48 @@ pub fn run() {
             fs::inspect_paths,
             fs::read_file_base64,
             fs::read_binary_file,
+            fs::read_project_image,
+            fs::allow_video_stream,
             fs::write_attachment,
+            fs::save_generated_image,
+            fs::delete_generated_images,
             fs::read_text_file,
+            fs::mobile_list_dir,
+            fs::mobile_read_text_file,
             fs::omp_session_interjections,
             fs::omp_active_assistant_texts,
+            fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
             search::search_project,
+            search::cancel_project_search,
             cursor_store::cursor_tool_calls,
             cursor_store::cursor_subagent_runs,
             harness::harness_resolve_cursor,
             harness::harness_resolve_codex,
             harness::harness_resolve_opencode,
+            harness::harness_resolve_configured,
+            harness::harness_runtime_binary_paths,
             harness::harness_resolve_claude,
+            harness::claude_mcp_list,
+            mcp::mcp_discover,
+            mcp::mcp_add,
+            harness::claude_mcp_add,
+            harness::claude_mcp_remove,
+            harness::mcp_provider_login,
             harness::harness_resolve_omp,
             harness::harness_resolve_pi,
             harness::harness_resolve_fx,
             harness::harness_resolve_grok,
             harness::harness_resolve_hermes,
+            harness::harness_resolve_devin,
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            codex_mono_store::codex_mono_store_prepare,
+            codex_mono_store::codex_mono_store_copy,
+            codex_mono_store::codex_mono_store_restore_agent_state,
+            provider_session_transfer::provider_session_transfer,
             harness::harness_write,
             harness::harness_kill,
             harness::harness_kill_all,
@@ -420,10 +520,15 @@ pub fn run() {
             harness::harness_sse_open,
             harness::harness_sse_close,
             harness::harness_exec,
+            harness_updates::harness_latest_version,
+            harness_updates::harness_update_check_claim,
+            harness_updates::harness_update,
             harness::provider_account_remove,
             account_identity::provider_account_identity,
+            pi_usage::fetch_pi_usage,
             rate_limits::fetch_claude_usage,
             rate_limits::fetch_opencode_go_usage,
+            devin_usage::fetch_devin_usage,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,
@@ -435,7 +540,13 @@ pub fn run() {
             session_store::session_rebase_project,
             session_store::session_list_linked,
             session_store::session_search,
+            session_store::cancel_session_search,
             session_store::session_get,
+            session_store::session_tool_detail,
+            mono_transcript::mono_session_get,
+            mono_transcript::mono_session_page,
+            mono_transcript::mono_session_upsert,
+            mono_transcript::mono_session_find,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,
@@ -448,10 +559,19 @@ pub fn run() {
             notes::notes_list,
             notes::notes_get,
             notes::notes_upsert,
+            artifacts::artifacts_list,
+            artifacts::artifacts_get,
+            artifacts::artifacts_upsert,
+            artifacts::artifacts_delete,
             notes::notes_delete,
             notes::notes_save_image,
             notes::notes_image_path,
+            mono::mono_load,
+            mono::mono_read,
+            mono::mono_save,
             checkpoint::session_checkpoint_ensure,
+            checkpoint::session_checkpoint_begin_turn,
+            checkpoint::session_checkpoint_finish_turn,
             checkpoint::session_checkpoint_prepare,
             checkpoint::session_checkpoint_capture,
             checkpoint::session_checkpoint_status,
@@ -464,6 +584,11 @@ pub fn run() {
             set_traffic_lights_visible,
             set_window_background_blur,
             set_dock_badge,
+            set_trackpad_zoom_enabled,
+            #[cfg(target_os = "macos")]
+            menu::keybindings_set_overrides,
+            #[cfg(target_os = "macos")]
+            menu::autosave_set_enabled,
             open_new_window,
             window::hide_window,
             window::destroy_window,
@@ -499,9 +624,34 @@ pub fn run() {
             quick_composer::git_popup::quick_composer_dismiss,
             #[cfg(target_os = "macos")]
             dictation::dictation_transcribe,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_sync,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_publish,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_state,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_ready,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_action,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_take,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_accept,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_reply,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_keep_alive,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_chat_switch,
+            #[cfg(target_os = "macos")]
+            mono_chat::mono_menu_bar_set_visible,
             window_transfer::stage_window_transfer,
             window_transfer::take_window_transfer,
             chat_background::save_chat_background,
+            resources::resource_usage,
+            resources::resource_processes,
+            resources::resource_stop_tool,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,
             chat_background::remove_project_chat_background,
@@ -509,16 +659,20 @@ pub fn run() {
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building MonoCode");
 
     app.run(|handle, event| match event {
         #[cfg(target_os = "macos")]
-        tauri::RunEvent::Reopen {
-            has_visible_windows: false,
-            ..
-        } => {
-            let _ = window::show_hidden_or_open_new(handle);
+        tauri::RunEvent::Reopen { .. } => {
+            // A visible floating panel must not make a hidden workspace
+            // unreachable from the Dock.
+            if !window::workspace_windows(handle)
+                .iter()
+                .any(|window| window.is_visible().unwrap_or(false))
+            {
+                let _ = window::show_hidden_or_open_new(handle);
+            }
         }
         tauri::RunEvent::Ready => {
             #[cfg(target_os = "macos")]
@@ -540,6 +694,8 @@ pub fn run() {
                 .iter()
                 .any(|window| window.label() != label);
             control::window_closed(handle, &label);
+            #[cfg(target_os = "macos")]
+            mono_chat::window_closed(handle, &label);
             if !other_window {
                 reap_harness_children(handle);
             }
@@ -558,6 +714,7 @@ pub fn run() {
             window::request_quit(handle);
         }
         tauri::RunEvent::Exit => {
+            handle.state::<remote::RemoteConnections>().shutdown();
             reap_harness_children(handle);
         }
         _ => {}
@@ -571,11 +728,6 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
     }
-}
-
-#[cfg(all(debug_assertions, target_os = "macos"))]
-pub fn ensure_macos_dev_bundle() {
-    macos::ensure_dev_bundle();
 }
 
 #[cfg(test)]

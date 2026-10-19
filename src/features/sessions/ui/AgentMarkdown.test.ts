@@ -67,6 +67,96 @@ describe("AgentMarkdown inline code", () => {
   });
 });
 
+describe("AgentMarkdown code fence highlighting", () => {
+  it("falls back to JS highlighting for a fence tagged text", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```text\nconst x = 1;\n```",
+      }),
+    );
+
+    expect(markup).toContain('data-language="js"');
+    expect(markup).not.toContain('data-language="text"');
+  });
+
+  it("falls back to JS highlighting for an untagged fence", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```\nconst x = 1;\n```",
+      }),
+    );
+
+    expect(markup).toContain('data-language="js"');
+  });
+
+  it("leaves an explicit real language alone", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```python\nx = 1\n```",
+      }),
+    );
+
+    expect(markup).toContain('data-language="python"');
+  });
+
+  it("keeps a text fence labeled text despite the JS highlighting fallback", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```text\nconst x = 1;\n```",
+      }),
+    );
+
+    expect(markup).toContain('data-language="js"');
+    expect(markup).toMatch(
+      /class="markdown-code-fallback-label"[^>]*>text<\/span>/,
+    );
+  });
+
+  it("leaves an untagged fence without a visible language label", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```\nconst x = 1;\n```",
+      }),
+    );
+
+    expect(markup).toMatch(
+      /class="markdown-code-fallback-label"[^>]*><\/span>/,
+    );
+  });
+
+  it("keeps the plaintext and txt fallbacks labeled with their own fence language", () => {
+    const plaintextMarkup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```plaintext\nconst x = 1;\n```",
+      }),
+    );
+    expect(plaintextMarkup).toContain('data-language="js"');
+    expect(plaintextMarkup).toMatch(
+      /class="markdown-code-fallback-label"[^>]*>plaintext<\/span>/,
+    );
+
+    const txtMarkup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```txt\nconst x = 1;\n```",
+      }),
+    );
+    expect(txtMarkup).toContain('data-language="js"');
+    expect(txtMarkup).toMatch(
+      /class="markdown-code-fallback-label"[^>]*>txt<\/span>/,
+    );
+  });
+
+  it("does not add a fallback label for a real language", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "```python\nx = 1\n```",
+      }),
+    );
+
+    expect(markup).not.toContain("markdown-code-fallback-label");
+  });
+});
+
 describe("AgentMarkdown note images", () => {
   it("keeps app-owned note image references for the async image resolver", () => {
     const markup = renderToStaticMarkup(
@@ -79,5 +169,71 @@ describe("AgentMarkdown note images", () => {
       'data-note-image="/note-assets/note-1/123-diagram.png"',
     );
     expect(markup).toContain('alt="Diagram"');
+  });
+});
+
+describe("AgentMarkdown local media", () => {
+  const text = [
+    "![Demo](</Users/me/My Clips/demo.mp4>)",
+    "",
+    "[Open the screenshot](/Users/me/shot.png) and [the notes](/Users/me/notes.md)",
+  ].join("\n");
+
+  it("shows local images and videos in place of their links when enabled", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, { text, localMedia: true }),
+    );
+
+    expect(markup).toContain('data-local-media="/Users/me/My Clips/demo.mp4"');
+    expect(markup).toContain('data-local-media="/Users/me/shot.png"');
+    expect(markup).not.toContain('data-local-media="/Users/me/notes.md"');
+    expect(markup).toContain(">the notes</a>");
+  });
+
+  it("shows an `<image: path>` marker as the image, but not inside code", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "Here:\n\n<image: /tmp/gc-preview.png>\n\n`<image: /tmp/a.png>`",
+        localMedia: true,
+      }),
+    );
+
+    expect(markup).toContain('data-local-media="/tmp/gc-preview.png"');
+    expect(markup).not.toContain('data-local-media="/tmp/a.png"');
+    expect(markup).toContain("&lt;image: /tmp/a.png&gt;</code>");
+  });
+
+  it("resolves a relative marker against the session cwd", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "<image: shots/chart.png>",
+        cwd: "/work/app",
+        localMedia: true,
+      }),
+    );
+
+    expect(markup).toContain('data-local-media="/work/app/shots/chart.png"');
+  });
+
+  it("keeps links and drops local images elsewhere", () => {
+    const markup = renderToStaticMarkup(createElement(AgentMarkdown, { text }));
+
+    expect(markup).not.toContain("data-local-media");
+    expect(markup).toContain(">Open the screenshot</a>");
+  });
+});
+
+describe("AgentMarkdown document images", () => {
+  it("drops relative images in chat, Markdown or HTML", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: '![Shot](shot.png)\n\n<p align="center"><img src=".github/readme/hero.png" alt="Hero"></p>',
+        cwd: "/repo",
+      }),
+    );
+
+    expect(markup).not.toContain("data-document-image");
+    expect(markup).not.toContain("<img");
+    expect(markup).not.toContain("data-image-alt");
   });
 });

@@ -1,5 +1,6 @@
 import { AcpClient } from "../../core/acp";
 import {
+  execChild,
   killChild,
   resolveGrokBinary,
   spawnChild,
@@ -14,6 +15,7 @@ import {
 } from "./grokProtocol";
 import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { mergeStream } from "../../core/streamText";
+import type { HarnessEvent } from "../../core/types";
 
 const TEXT_CHILD_ID = "monocode-grok-text";
 const INIT_TIMEOUT_MS = 60_000;
@@ -26,6 +28,7 @@ const CLIENT_CAPABILITIES = {
 
 type LiveText = {
   acp: AcpClient;
+  binaryPath: string;
   cwd: string;
   model: string;
   settingsKey: string;
@@ -33,6 +36,7 @@ type LiveText = {
   collecting: boolean;
   output: string;
   closed: boolean;
+  onEvent?: (event: HarnessEvent) => void;
 };
 
 let live: LiveText | null = null;
@@ -67,6 +71,7 @@ export async function runGrokTextPrompt(input: {
   prompt: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
   const run = turns.catch(() => undefined).then(() => promptOnLive(input));
   turns = run.then(
@@ -83,10 +88,14 @@ async function promptOnLive(input: {
   prompt: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
+  input.signal?.throwIfAborted();
   const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  input.signal?.throwIfAborted();
   session.output = "";
   session.collecting = true;
+  session.onEvent = input.onEvent;
   const abort = abortTextPromptRace(input.signal, () =>
     session.acp.notify("session/cancel", {
       sessionId: session.acpSessionId,
@@ -114,6 +123,7 @@ async function promptOnLive(input: {
   } finally {
     abort.detach();
     session.collecting = false;
+    session.onEvent = undefined;
     await dropLive();
   }
 }
@@ -125,20 +135,16 @@ async function ensureLive(
 ): Promise<LiveText> {
   const model = requestedModel?.trim() || TEXT_MODEL;
   const settingsKey = modelSettingsKey(modelSettings);
-  if (live && !live.closed) {
-    if (
-      live.cwd === cwd &&
-      live.model === model &&
-      live.settingsKey === settingsKey
-    )
-      return live;
-    try {
-      await openSession(live, cwd, model, modelSettings);
-      return live;
-    } catch {
-      await dropLive();
-    }
-  }
+  if (
+    live &&
+    !live.closed &&
+    live.cwd === cwd &&
+    live.model === model &&
+    live.settingsKey === settingsKey
+  )
+    return live;
+  // Retire the previous throwaway session before replacing its id, including
+  // when a warmed-up process needs a different model or working directory.
   return startLive(cwd, model, modelSettings);
 }
 
@@ -155,7 +161,10 @@ async function startLive(
       const session = acpRef.session;
       if (!session || method !== "session/update" || !session.collecting)
         return;
-      session.output = mergeStream(session.output, textFromUpdate(params));
+      const previous = session.output;
+      session.output = mergeStream(previous, textFromUpdate(params));
+      const delta = session.output.slice(previous.length);
+      if (delta) session.onEvent?.({ type: "message.delta", text: delta });
     },
     onRequest: (id, method, params) => {
       void handleTextRequest(acp, id, method, params);
@@ -163,6 +172,7 @@ async function startLive(
   });
   const session: LiveText = {
     acp,
+    binaryPath: path,
     cwd,
     model,
     settingsKey: modelSettingsKey(modelSettings),
@@ -170,6 +180,7 @@ async function startLive(
     collecting: false,
     output: "",
     closed: false,
+    onEvent: undefined,
   };
   acpRef.session = session;
 
@@ -178,13 +189,20 @@ async function startLive(
     (line) => acp.pushLine(line),
     () => {
       session.closed = true;
-      if (live === session) live = null;
+      // Keep the closed session available for history cleanup in dropLive.
       acp.close(new Error("Grok Build text generator exited"));
     },
   );
 
   try {
-    await spawnChild(TEXT_CHILD_ID, path, grokTextSpawnArgs(), cwd);
+    await spawnChild(
+      TEXT_CHILD_ID,
+      path,
+      grokTextSpawnArgs(),
+      cwd,
+      undefined,
+      "grok",
+    );
     const init = await acp.request(
       "initialize",
       {
@@ -212,6 +230,7 @@ async function startLive(
     acp.close(error instanceof Error ? error : new Error(String(error)));
     unwatchChild(TEXT_CHILD_ID);
     await killChild(TEXT_CHILD_ID).catch(() => undefined);
+    await deleteTextSession(session);
     throw error;
   }
 }
@@ -229,6 +248,7 @@ async function openSession(
   );
   const acpSessionId = setup.sessionId?.trim();
   if (!acpSessionId) throw new Error("Grok Build did not return a session id");
+  session.acpSessionId = acpSessionId;
 
   await session.acp
     .request(
@@ -251,7 +271,6 @@ async function openSession(
   session.cwd = cwd;
   session.model = model;
   session.settingsKey = modelSettingsKey(modelSettings);
-  session.acpSessionId = acpSessionId;
 }
 
 async function dropLive(): Promise<void> {
@@ -263,6 +282,23 @@ async function dropLive(): Promise<void> {
   }
   unwatchChild(TEXT_CHILD_ID);
   await killChild(TEXT_CHILD_ID).catch(() => undefined);
+  // Stop the writer first so it cannot recreate the session after deletion.
+  if (current) await deleteTextSession(current);
+}
+
+async function deleteTextSession(session: LiveText): Promise<void> {
+  if (
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(session.acpSessionId)
+  )
+    return;
+  await execChild(
+    session.binaryPath,
+    ["--no-auto-update", "sessions", "delete", session.acpSessionId],
+    session.cwd,
+    "grok",
+  ).catch((error) =>
+    console.debug("[monocode] Grok text session cleanup", error),
+  );
 }
 
 async function handleTextRequest(

@@ -4,36 +4,43 @@ import {
   useEffect,
   useRef,
   useState,
-  type Dispatch,
-  type SetStateAction,
+  type ReactNode,
 } from "react";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
-import {
-  consumeCodexRateLimitResetCredit,
-  fetchClaudeRateLimits,
-  fetchCodexRateLimits,
-  fetchOmpRateLimits,
-  fetchOpencodeGoRateLimits,
-} from "../../features/providers/model/rateLimitsFetch";
+import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
 import {
   errorRateLimits,
-  fetchingRateLimits,
-  idleRateLimits,
-  RATE_LIMIT_POLL_MS,
-  shouldFetchProvider,
   unavailableRateLimits,
-  type ProviderRateLimits,
   type RateLimitProvider,
 } from "../../features/providers/model/rateLimits";
-import { HARNESS_LABEL, HARNESS_TITLE, type HarnessId } from "../../features/sessions/model/session";
-import { loginHarness, supportsHarnessLogin } from "../../integrations/harness/core/auth";
+import {
+  getCachedRateLimits,
+  loadRateLimits,
+  setCachedRateLimits,
+  useCachedRateLimits,
+} from "../../features/providers/model/rateLimitsCache";
+import {
+  HARNESS_LABEL,
+  HARNESS_TITLE,
+  type HarnessId,
+} from "../../features/sessions/model/session";
+import {
+  loginHarness,
+  supportsHarnessLogin,
+} from "../../integrations/harness/core/auth";
 import {
   runningTerminalChipLabel,
   type RunningTerminal,
 } from "../../features/terminal/model/terminalTab";
 import { MOD } from "../../platform/tauri/platform";
-import { UsageProviderChip } from "./UsageProviderChip";
+import {
+  USAGE_CHIP_CLASSES,
+  USAGE_REFRESH_CLASSES,
+  UsageProviderChip,
+  type UsageChipVariant,
+} from "./UsageProviderChip";
+import { PiUsage } from "./PiUsage";
 import { SessionGitChips } from "./SessionGitChips";
 import type { SessionGitActivity } from "../../features/sessions/model/sessionGitActivity";
 import {
@@ -56,10 +63,9 @@ const CLOCK_MS = 30_000;
 export type UsageFooterSession = {
   id?: string;
   harness: HarnessId;
+  model?: string;
   authRequired?: boolean;
   providerAccountId?: string;
-  /** Harness-qualified model id, e.g. `omp:anthropic/claude-opus-5-5`. */
-  model?: string;
 };
 
 export function UsageFooter({
@@ -71,10 +77,13 @@ export function UsageFooter({
   terminalOpen = false,
   onToggleTerminal,
   onNewTerminal,
-  onShowTerminal,
+  onToggleProjectTerminal,
   projectTerminalActive = false,
+  projectTerminalOpen = false,
   onSelectAccount,
   onManageAccounts,
+  inset = false,
+  pressureSlot,
 }: {
   providers: RateLimitProvider[];
   session?: UsageFooterSession;
@@ -85,50 +94,157 @@ export function UsageFooter({
   terminalOpen?: boolean;
   onToggleTerminal?: (fileId: string) => void;
   onNewTerminal?: () => void;
-  onShowTerminal?: () => void;
+  onToggleProjectTerminal?: () => void;
   projectTerminalActive?: boolean;
+  projectTerminalOpen?: boolean;
   onSelectAccount?: (
     provider: ProviderAccountProvider,
     accountId: string,
   ) => void;
   onManageAccounts?: (provider: ProviderAccountProvider) => void;
+  /** Sits on the inset layout's outer glass, below the card. */
+  inset?: boolean;
+  /** Receives the slot beside the terminal button for the pressure chip. */
+  pressureSlot?: (element: HTMLSpanElement | null) => void;
+}) {
+  const opencode = useCachedRateLimits("opencode");
+  const showUsage =
+    providers.some((provider) => provider !== "opencode") ||
+    (providers.includes("opencode") && opencode.status !== "unavailable");
+  const showTerminals = terminals.length > 0;
+  const showTerminalButton = Boolean(
+    onNewTerminal || onToggleProjectTerminal,
+  );
+  const terminalLabel = projectTerminalActive
+    ? "Terminal"
+    : `New Terminal (${MOD}\`)`;
+  const onTerminalClick = projectTerminalActive
+    ? (onToggleProjectTerminal ?? onNewTerminal)
+    : (onNewTerminal ?? onToggleProjectTerminal);
+  const ariaLabel = showUsage || session?.harness === "pi"
+    ? "Provider usage"
+    : showTerminals || showTerminalButton
+      ? "Terminals"
+      : session
+        ? "Session"
+        : undefined;
+
+  return (
+    <footer
+      aria-label={ariaLabel}
+      // Inset: the card's edge above reads as part of the gap, so a little
+      // room below keeps the chips optically centred. The pills line up with
+      // the card's edges, which carry their own padding.
+      className={`flex shrink-0 items-center gap-1.5 overflow-x-auto text-[11px] text-content/55${
+        inset
+          ? " inset-footer mr-1.5 h-[30px] pb-0.5"
+          : " h-7 border-t border-stroke px-3"
+      }`}
+    >
+      <UsageChips
+        providers={providers}
+        session={session}
+        project={project}
+        onSelectAccount={onSelectAccount}
+        onManageAccounts={onManageAccounts}
+        variant={inset ? "inset" : "footer"}
+        fallback={
+          session ? (
+            <SessionChip
+              key={session.id ?? session.harness}
+              session={session}
+              inset={inset}
+            />
+          ) : null
+        }
+      />
+      {git ? <SessionGitChips activity={git} /> : null}
+      {showTerminals || showTerminalButton || pressureSlot ? (
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {pressureSlot ? (
+            <span
+              ref={pressureSlot}
+              className="flex items-center empty:hidden"
+            />
+          ) : null}
+          {showTerminals ? (
+            <RunningTerminalChip
+              terminals={terminals}
+              open={terminalOpen}
+              onToggle={onToggleTerminal}
+              inset={inset}
+            />
+          ) : showTerminalButton ? (
+            <button
+              type="button"
+              className={`inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap hover:bg-content/10 ${
+                inset ? "rounded-full px-2" : "rounded-md px-1.5"
+              } ${
+                projectTerminalOpen
+                  ? "text-accent"
+                  : "text-content/40 hover:text-content"
+              }`}
+              aria-label={terminalLabel}
+              aria-pressed={projectTerminalOpen}
+              title={terminalLabel}
+              onClick={onTerminalClick}
+            >
+              <Terminal className="size-3.5" strokeWidth={1.75} aria-hidden />
+              <span>Terminal</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </footer>
+  );
+}
+
+/**
+ * The provider usage chips and their refresh button, for the session footer
+ * and anywhere else a conversation shows how much of its plan is left.
+ * `accountPicker` off keeps the chips to usage alone, for a conversation
+ * whose account is not switched from here. `variant` `composer` matches
+ * the tool buttons under a Mono's composer instead of the footer.
+ */
+export function UsageChips({
+  providers,
+  session,
+  project,
+  onSelectAccount,
+  onManageAccounts,
+  accountPicker = true,
+  fallback = null,
+  variant = "footer",
+}: {
+  providers: RateLimitProvider[];
+  session?: UsageFooterSession;
+  project?: string;
+  onSelectAccount?: (
+    provider: ProviderAccountProvider,
+    accountId: string,
+  ) => void;
+  onManageAccounts?: (provider: ProviderAccountProvider) => void;
+  accountPicker?: boolean;
+  /** Shown when there is no usage to show. */
+  fallback?: ReactNode;
+  variant?: UsageChipVariant;
 }) {
   const wantClaude = providers.includes("claude");
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
+  const wantDevin = providers.includes("devin");
   const wantOmp = providers.includes("omp");
-  // `omp:default` names no provider; the parser then takes omp's first report.
+  // omp reports usage per model provider; `omp:default` names none, so the
+  // parser then takes omp's first report.
   const ompNativeModel =
     session?.harness === "omp" ? session.model?.replace(/^omp:/, "") : undefined;
   const ompModelProvider = ompNativeModel?.includes("/")
     ? ompNativeModel.split("/")[0]
-    : undefined;
-  const [claude, setClaude] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("claude"),
-  );
-  const [codex, setCodex] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("codex"),
-  );
-  const [opencode, setOpencode] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("opencode"),
-  );
-  const [omp, setOmp] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("omp"),
-  );
+    : "default";
   const [now, setNow] = useState(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
   const [, setAccountsVersion] = useState(0);
   const inflight = useRef<Promise<void> | null>(null);
-  const claudeRef = useRef(claude);
-  const codexRef = useRef(codex);
-  const opencodeRef = useRef(opencode);
-  const ompRef = useRef(omp);
-  const ompModelProviderRef = useRef(ompModelProvider);
-  claudeRef.current = claude;
-  codexRef.current = codex;
-  opencodeRef.current = opencode;
-  ompRef.current = omp;
-  ompModelProviderRef.current = ompModelProvider;
   const claudeAccountId =
     session?.harness === "claude" && session.providerAccountId
       ? session.providerAccountId
@@ -139,16 +255,28 @@ export function UsageFooter({
       : selectedProviderAccountId("codex", project);
   const claudeAccounts = providerAccounts("claude");
   const codexAccounts = providerAccounts("codex");
-  const allAccounts = [...claudeAccounts, ...codexAccounts];
   const claudeAccountAvailable = providerAccountExists(
     "claude",
     claudeAccountId,
   );
   const codexAccountAvailable = providerAccountExists("codex", codexAccountId);
-  const claudeAccountRef = useRef(claudeAccountId);
-  const codexAccountRef = useRef(codexAccountId);
-  claudeAccountRef.current = claudeAccountId;
-  codexAccountRef.current = codexAccountId;
+  const cachedClaude = useCachedRateLimits("claude", claudeAccountId);
+  const cachedCodex = useCachedRateLimits("codex", codexAccountId);
+  const opencode = useCachedRateLimits("opencode");
+  const devin = useCachedRateLimits("devin");
+  const omp = useCachedRateLimits("omp", ompModelProvider);
+  const claude = claudeAccountAvailable
+    ? cachedClaude
+    : unavailableRateLimits(
+        "claude",
+        "This conversation uses a removed account",
+      );
+  const codex = codexAccountAvailable
+    ? cachedCodex
+    : unavailableRateLimits(
+        "codex",
+        "This conversation uses a removed account",
+      );
 
   useEffect(
     () =>
@@ -156,129 +284,60 @@ export function UsageFooter({
     [],
   );
 
-  const refresh = useCallback(
-    (force = false) => {
-      if (inflight.current) return inflight.current;
-      const visible = document.visibilityState === "visible";
-      const fetchClaude =
-        wantClaude &&
-        claudeAccountAvailable &&
-        shouldFetchProvider(claudeRef.current, { force, visible });
-      const fetchCodex =
-        wantCodex &&
-        codexAccountAvailable &&
-        shouldFetchProvider(codexRef.current, { force, visible });
-      const fetchOpencode =
-        wantOpencode &&
-        shouldFetchProvider(opencodeRef.current, { force, visible });
-      const fetchOmp =
-        wantOmp && shouldFetchProvider(ompRef.current, { force, visible });
-      if (!fetchClaude && !fetchCodex && !fetchOpencode && !fetchOmp) return;
-      if (force) setRefreshing(true);
-      const jobs: Promise<void>[] = [];
-      if (fetchClaude) {
-        const accountId = claudeAccountId;
-        setClaude((current) => fetchingRateLimits("claude", current));
-        jobs.push(
-          fetchClaudeRateLimits(accountId).then((value) => {
-            if (accountId === claudeAccountRef.current) setClaude(value);
-          }),
-        );
-      }
-      if (fetchCodex) {
-        const accountId = codexAccountId;
-        setCodex((current) => fetchingRateLimits("codex", current));
-        jobs.push(
-          fetchCodexRateLimits(accountId).then((value) => {
-            if (accountId === codexAccountRef.current) setCodex(value);
-          }),
-        );
-      }
-      if (fetchOpencode) {
-        setOpencode((current) => fetchingRateLimits("opencode", current));
-        jobs.push(
-          fetchOpencodeGoRateLimits().then((value) => {
-            setOpencode(value);
-          }),
-        );
-      }
-      if (fetchOmp) {
-        const modelProvider = ompModelProvider;
-        setOmp((current) => fetchingRateLimits("omp", current));
-        jobs.push(
-          fetchOmpRateLimits(modelProvider).then((value) => {
-            if (modelProvider === ompModelProviderRef.current) setOmp(value);
-          }),
-        );
-      }
-      const run = Promise.allSettled(jobs)
-        .then(() => undefined)
-        .finally(() => {
-          inflight.current = null;
-          setRefreshing(false);
-        });
-      inflight.current = run;
-      return run;
-    },
-    [
-      claudeAccountAvailable,
-      claudeAccountId,
-      codexAccountAvailable,
-      codexAccountId,
-      wantClaude,
-      wantCodex,
-      wantOmp,
-      wantOpencode,
-      ompModelProvider,
-    ],
-  );
-
+  // New accounts load once. Returning from Settings or focusing the window
+  // reads the shared snapshot without starting another provider request.
   useEffect(() => {
-    const next = claudeAccountAvailable
-      ? idleRateLimits("claude")
-      : unavailableRateLimits(
-          "claude",
-          "This conversation uses a removed account",
-        );
-    claudeRef.current = next;
-    setClaude(next);
-    const pending = inflight.current;
-    if (pending) void pending.finally(() => refresh(true));
-  }, [claudeAccountAvailable, claudeAccountId, refresh]);
+    if (wantClaude && claudeAccountAvailable)
+      void loadRateLimits("claude", claudeAccountId);
+    if (wantCodex && codexAccountAvailable)
+      void loadRateLimits("codex", codexAccountId);
+    if (wantOpencode) void loadRateLimits("opencode");
+    if (wantDevin) void loadRateLimits("devin");
+    if (wantOmp) void loadRateLimits("omp", ompModelProvider);
+  }, [
+    claudeAccountAvailable,
+    claudeAccountId,
+    codexAccountAvailable,
+    codexAccountId,
+    wantClaude,
+    wantCodex,
+    wantOpencode,
+    wantDevin,
+    wantOmp,
+    ompModelProvider,
+  ]);
 
-  useEffect(() => {
-    const next = codexAccountAvailable
-      ? idleRateLimits("codex")
-      : unavailableRateLimits(
-          "codex",
-          "This conversation uses a removed account",
-        );
-    codexRef.current = next;
-    setCodex(next);
-    const pending = inflight.current;
-    if (pending) void pending.finally(() => refresh(true));
-  }, [codexAccountAvailable, codexAccountId, refresh]);
-
-  useEffect(() => {
-    const next = idleRateLimits("omp");
-    ompRef.current = next;
-    setOmp(next);
-    const pending = inflight.current;
-    if (pending) void pending.finally(() => refresh(true));
-  }, [ompModelProvider, refresh]);
-
-  useEffect(() => {
-    void refresh();
-    const poll = window.setInterval(() => void refresh(), RATE_LIMIT_POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.clearInterval(poll);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [refresh]);
+  const refresh = useCallback(() => {
+    if (inflight.current) return inflight.current;
+    setRefreshing(true);
+    const jobs: Promise<unknown>[] = [];
+    if (wantClaude && claudeAccountAvailable)
+      jobs.push(loadRateLimits("claude", claudeAccountId, true));
+    if (wantCodex && codexAccountAvailable)
+      jobs.push(loadRateLimits("codex", codexAccountId, true));
+    if (wantOpencode) jobs.push(loadRateLimits("opencode", "default", true));
+    if (wantDevin) jobs.push(loadRateLimits("devin", "default", true));
+    if (wantOmp) jobs.push(loadRateLimits("omp", ompModelProvider, true));
+    const run = Promise.allSettled(jobs)
+      .then(() => undefined)
+      .finally(() => {
+        inflight.current = null;
+        setRefreshing(false);
+      });
+    inflight.current = run;
+    return run;
+  }, [
+    claudeAccountAvailable,
+    claudeAccountId,
+    codexAccountAvailable,
+    codexAccountId,
+    wantClaude,
+    wantCodex,
+    wantOpencode,
+    wantDevin,
+    wantOmp,
+    ompModelProvider,
+  ]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), CLOCK_MS);
@@ -289,7 +348,6 @@ export function UsageFooter({
     async (creditId?: string) => {
       while (inflight.current) await inflight.current;
       setRefreshing(true);
-      setCodex((current) => fetchingRateLimits("codex", current));
       let outcome: Awaited<ReturnType<typeof consumeCodexRateLimitResetCredit>>;
       const operation = (async () => {
         try {
@@ -297,13 +355,21 @@ export function UsageFooter({
             creditId,
             codexAccountId,
           );
-          setCodex(await fetchCodexRateLimits(codexAccountId));
+          await loadRateLimits("codex", codexAccountId, true);
         } catch (error) {
           const message =
             error instanceof Error
               ? error.message
               : "Could not use Codex reset";
-          setCodex((current) => errorRateLimits("codex", message, current));
+          setCachedRateLimits(
+            "codex",
+            codexAccountId,
+            errorRateLimits(
+              "codex",
+              message,
+              getCachedRateLimits("codex", codexAccountId),
+            ),
+          );
           throw error;
         }
       })();
@@ -319,22 +385,15 @@ export function UsageFooter({
   );
 
   const reconnectProvider = useCallback(
-    async (
-      provider: RateLimitProvider,
-      accountId: string,
-      fetchLimits: () => Promise<ProviderRateLimits>,
-      setLimits: Dispatch<SetStateAction<ProviderRateLimits>>,
-    ) => {
+    async (provider: RateLimitProvider, accountId: string) => {
       while (inflight.current) await inflight.current;
       setRefreshing(true);
-      setLimits((current) => fetchingRateLimits(provider, current));
       const operation = (async () => {
         try {
           await (accountId === "default"
             ? loginHarness(provider)
             : loginHarness(provider, accountId));
-          const value = await fetchLimits();
-          setLimits(value);
+          const value = await loadRateLimits(provider, accountId, true);
           if (value.status !== "ok") {
             throw new Error(
               value.error ||
@@ -346,7 +405,15 @@ export function UsageFooter({
             error instanceof Error
               ? error.message
               : "Could not complete sign-in";
-          setLimits((current) => errorRateLimits(provider, message, current));
+          setCachedRateLimits(
+            provider,
+            accountId,
+            errorRateLimits(
+              provider,
+              message,
+              getCachedRateLimits(provider, accountId),
+            ),
+          );
           throw error;
         }
       })();
@@ -361,25 +428,18 @@ export function UsageFooter({
   );
 
   const reconnectClaude = useCallback(
-    () =>
-      reconnectProvider(
-        "claude",
-        claudeAccountId,
-        () => fetchClaudeRateLimits(claudeAccountId),
-        setClaude,
-      ),
+    () => reconnectProvider("claude", claudeAccountId),
     [claudeAccountId, reconnectProvider],
   );
 
   const reconnectCodex = useCallback(
-    () =>
-      reconnectProvider(
-        "codex",
-        codexAccountId,
-        () => fetchCodexRateLimits(codexAccountId),
-        setCodex,
-      ),
+    () => reconnectProvider("codex", codexAccountId),
     [codexAccountId, reconnectProvider],
+  );
+
+  const reconnectDevin = useCallback(
+    () => reconnectProvider("devin", "default"),
+    [reconnectProvider],
   );
 
   const selectAccount = useCallback(
@@ -403,127 +463,107 @@ export function UsageFooter({
 
   const showOpencodeChip = wantOpencode && opencode.status !== "unavailable";
   const showOmpChip = wantOmp && omp.status !== "unavailable";
-  const showUsage = wantClaude || wantCodex || showOpencodeChip || showOmpChip;
-  const showTerminals = terminals.length > 0;
-  const showTerminalButton = Boolean(onNewTerminal || onShowTerminal);
-  const terminalLabel = projectTerminalActive
-    ? "Terminal"
-    : `New Terminal (${MOD}\`)`;
-  const onTerminalClick = projectTerminalActive
-    ? (onShowTerminal ?? onNewTerminal)
-    : (onNewTerminal ?? onShowTerminal);
-  const ariaLabel = showUsage
-    ? "Provider usage"
-    : showTerminals || showTerminalButton
-      ? "Terminals"
-      : session
-        ? "Session"
-        : undefined;
+  const showUsage =
+    wantClaude || wantCodex || showOpencodeChip || wantDevin || showOmpChip;
+  const claudeAccountProps = accountPicker
+    ? {
+        accounts: claudeAccounts,
+        accountId: claudeAccountId,
+        onSelectAccount: (accountId: string) =>
+          selectAccount("claude", accountId),
+        onAddAccount: (label: string) => addAccount("claude", label),
+        onManageAccounts: onManageAccounts
+          ? () => onManageAccounts("claude")
+          : undefined,
+      }
+    : {};
+  const codexAccountProps = accountPicker
+    ? {
+        accounts: codexAccounts,
+        accountId: codexAccountId,
+        onSelectAccount: (accountId: string) =>
+          selectAccount("codex", accountId),
+        onAddAccount: (label: string) => addAccount("codex", label),
+        onManageAccounts: onManageAccounts
+          ? () => onManageAccounts("codex")
+          : undefined,
+      }
+    : {};
 
+  if (session?.harness === "pi") {
+    return (
+      <PiUsage
+        key={`${session.id}:${session.model}`}
+        model={session.model}
+        now={now}
+        variant={variant}
+      />
+    );
+  }
+  if (!showUsage) return <>{fallback}</>;
   return (
-    <footer
-      aria-label={ariaLabel}
-      className="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-t border-stroke px-3 text-[11px] text-content/55"
-    >
-      {showUsage ? (
-        <>
-          {wantClaude ? (
-            <UsageProviderChip
-              limits={claude}
-              now={now}
-              accounts={claudeAccounts}
-              accountId={claudeAccountId}
-              onSelectAccount={(accountId) =>
-                selectAccount("claude", accountId)
-              }
-              onAddAccount={(label) => addAccount("claude", label)}
-              onManageAccounts={
-                onManageAccounts ? () => onManageAccounts("claude") : undefined
-              }
-              onReconnect={reconnectClaude}
-              allAccounts={allAccounts}
-            />
-          ) : null}
-          {wantCodex ? (
-            <UsageProviderChip
-              limits={codex}
-              now={now}
-              project={project}
-              accounts={codexAccounts}
-              accountId={codexAccountId}
-              onSelectAccount={(accountId) => selectAccount("codex", accountId)}
-              onAddAccount={(label) => addAccount("codex", label)}
-              onManageAccounts={
-                onManageAccounts ? () => onManageAccounts("codex") : undefined
-              }
-              onConsumeReset={consumeCodexReset}
-              onReconnect={reconnectCodex}
-              allAccounts={allAccounts}
-            />
-          ) : null}
-          {showOpencodeChip ? (
-            <UsageProviderChip
-              limits={opencode}
-              now={now}
-              project={project}
-              allAccounts={allAccounts}
-            />
-          ) : null}
-          {showOmpChip ? (
-            <UsageProviderChip
-              limits={omp}
-              now={now}
-              project={project}
-              allAccounts={allAccounts}
-            />
-          ) : null}
-          <button
-            type="button"
-            className="grid size-4.5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-50"
-            aria-label="Refresh usage"
-            title="Refresh usage"
-            disabled={refreshing}
-            onClick={() => void refresh(true)}
-          >
-            <RefreshCw
-              className={`size-2.5 ${refreshing ? "animate-spin" : ""}`}
-              strokeWidth={1.75}
-              aria-hidden
-            />
-          </button>
-        </>
-      ) : session ? (
-        <SessionChip key={session.id ?? session.harness} session={session} />
+    <>
+      {wantClaude ? (
+        <UsageProviderChip
+          limits={claude}
+          now={now}
+          variant={variant}
+          {...claudeAccountProps}
+          onReconnect={reconnectClaude}
+        />
       ) : null}
-      {git ? <SessionGitChips activity={git} /> : null}
-      {showTerminals || showTerminalButton ? (
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {showTerminals ? (
-            <RunningTerminalChip
-              terminals={terminals}
-              open={terminalOpen}
-              onToggle={onToggleTerminal}
-            />
-          ) : showTerminalButton ? (
-            <button
-              type="button"
-              className={`inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1.5 hover:bg-content/10 ${
-                projectTerminalActive
-                  ? "text-accent"
-                  : "text-content/40 hover:text-content"
-              }`}
-              aria-label={terminalLabel}
-              aria-pressed={projectTerminalActive}
-              title={terminalLabel}
-              onClick={onTerminalClick}
-            >
-              <Terminal className="size-3.5" strokeWidth={1.75} aria-hidden />
-              <span>Terminal</span>
-            </button>
-          ) : null}
-        </div>
+      {wantCodex ? (
+        <UsageProviderChip
+          limits={codex}
+          now={now}
+          project={project}
+          variant={variant}
+          {...codexAccountProps}
+          onConsumeReset={consumeCodexReset}
+          onReconnect={reconnectCodex}
+        />
       ) : null}
-    </footer>
+      {showOpencodeChip ? (
+        <UsageProviderChip
+          limits={opencode}
+          now={now}
+          project={project}
+          variant={variant}
+        />
+      ) : null}
+      {wantDevin ? (
+        // Devin has one login per machine, so there is no account picker.
+        <UsageProviderChip
+          limits={devin}
+          now={now}
+          project={project}
+          variant={variant}
+          onReconnect={reconnectDevin}
+        />
+      ) : null}
+      {showOmpChip ? (
+        <UsageProviderChip
+          limits={omp}
+          now={now}
+          project={project}
+          variant={variant}
+        />
+      ) : null}
+      <button
+        type="button"
+        className={USAGE_REFRESH_CLASSES[variant]}
+        aria-label="Refresh usage"
+        title="Refresh usage"
+        disabled={refreshing}
+        onClick={() => void refresh()}
+      >
+        <RefreshCw
+          className={`size-2.5 ${refreshing ? "animate-spin" : ""}`}
+          strokeWidth={1.75}
+          aria-hidden
+        />
+      </button>
+    </>
   );
 }
 
@@ -537,7 +577,13 @@ function TerminalLiveMark() {
   );
 }
 
-function SessionChip({ session }: { session: UsageFooterSession }) {
+function SessionChip({
+  session,
+  inset,
+}: {
+  session: UsageFooterSession;
+  inset: boolean;
+}) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [loginState, setLoginState] = useState<ProviderSignInState>("idle");
@@ -592,7 +638,7 @@ function SessionChip({ session }: { session: UsageFooterSession }) {
       <button
         ref={trigger}
         type="button"
-        className="-mx-1 inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent active:scale-[0.97]"
+        className={USAGE_CHIP_CLASSES[inset ? "inset" : "footer"]}
         aria-label={`${HARNESS_TITLE[session.harness]} sign-in required`}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -637,10 +683,12 @@ function RunningTerminalChip({
   terminals,
   open: panelOpen,
   onToggle,
+  inset,
 }: {
   terminals: RunningTerminal[];
   open: boolean;
   onToggle?: (fileId: string) => void;
+  inset: boolean;
 }) {
   const root = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -668,7 +716,9 @@ function RunningTerminalChip({
       <button
         ref={root}
         type="button"
-        className="inline-flex min-w-0 max-w-[16rem] items-center gap-1.5 whitespace-nowrap rounded px-1 -mx-1 hover:bg-content/10 hover:text-content"
+        className={`inline-flex min-w-0 max-w-[16rem] items-center gap-1.5 whitespace-nowrap hover:bg-content/10 hover:text-content ${
+          inset ? "h-5 rounded-full px-2" : "-mx-1 rounded-md px-1"
+        }`}
         aria-label={ariaLabel}
         aria-pressed={panelOpen}
         aria-expanded={many && !panelOpen ? menuOpen : undefined}

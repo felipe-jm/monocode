@@ -8,6 +8,7 @@ export {
 } from "./core/auth";
 export {
   applyHarnessEvent,
+  applyHarnessEvents,
   appendUser,
   appendSteerUser,
   promoteLastAssistantToPlan,
@@ -30,6 +31,8 @@ export {
   stopCodexSession,
   forgetCodexSession,
   bindCodexSession,
+  hasLiveCodexSession,
+  migrateMonoCodexSession,
 } from "./providers/codex/codex";
 export {
   sendOpenCodeTurn,
@@ -180,8 +183,11 @@ export {
   respondHarnessQuestion,
   keepHarnessQuestionOpen,
   stopHarnessSession,
+  configureHarnessIdlePark,
+  enforceHarnessIdleLimit,
   forgetHarnessSession,
   bindHarnessSession,
+  transferHarnessSessionAccount,
   refreshHarnessCatalogs,
   generateHarnessTitle,
   generateHarnessCommitMessage,
@@ -197,6 +203,7 @@ export type {
   HarnessEvent,
   SteerTurnInput,
 } from "./core/types";
+export { TurnNotReadyError } from "./core/types";
 export type {
   UserQuestion,
   UserQuestionPrompt,

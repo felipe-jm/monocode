@@ -1,3 +1,4 @@
+import { hasReadableText } from "../../../../features/sessions/model/transcriptActivity";
 import type { HarnessEvent } from "../../core/types";
 import {
   asRecord,
@@ -117,7 +118,7 @@ export function piSubagentEvents(
             part,
             part.type === "text" ? "text" : "thinking",
           );
-          if (text)
+          if (text && (part.type === "thinking" || hasReadableText(text)))
             emit({
               stepId,
               kind: part.type === "text" ? "message" : "reasoning",
@@ -128,6 +129,7 @@ export function piSubagentEvents(
           const tool = stringField(part, "name") ?? "tool";
           const args = asRecord(part.arguments) ?? {};
           const outcome = toolResults.get(id);
+          const output = textFromContent(outcome?.content);
           emit({
             stepId: `${rowId}:tool:${id ?? `${messageIndex}:${partIndex}`}`,
             kind: "tool",
@@ -140,11 +142,10 @@ export function piSubagentEvents(
               : status === "in_progress"
                 ? "in_progress"
                 : status,
-            preview: previewFromTool(
-              tool,
-              args,
-              textFromContent(outcome?.content),
-            ),
+            // Only a failure earns detail: a preview's output is never shown
+            // on the row, so this is the one place the error can be read.
+            ...(outcome?.isError && output ? { detail: output } : {}),
+            preview: previewFromTool(tool, args, output),
           });
         }
       });

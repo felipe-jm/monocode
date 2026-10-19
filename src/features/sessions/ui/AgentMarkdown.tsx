@@ -1,4 +1,3 @@
-import { code } from "@streamdown/code";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -8,44 +7,80 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ComponentProps,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { harden } from "rehype-harden";
 import {
+  Block,
   CodeBlock,
   Streamdown,
   defaultRehypePlugins,
   defaultRemarkPlugins,
   useIsCodeFenceIncomplete,
+  type BlockProps,
   type Components,
 } from "streamdown";
-import type { PluggableList } from "unified";
-import { ExplorerMenu, type ExplorerMenuItem } from "../../files/ui/ExplorerMenu";
+import type { Pluggable, PluggableList } from "unified";
+import {
+  ExplorerMenu,
+  type ExplorerMenuItem,
+} from "../../files/ui/ExplorerMenu";
 import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
+import { boundedCode } from "../../files/editor/codeHighlightPlugin";
 import { createLazyMermaidPlugin } from "../../files/editor/mermaidPlugin";
 import {
   displayPath,
   isExtensionlessFileName,
+  resolveDocumentImage,
   resolveWorkspaceFileReference,
 } from "../../../shared/lib/paths";
 import type { EditorNavigation, OpenFileFn } from "../../search/model/search";
 import { remarkWorkspaceFileLinks } from "../../files/model/markdownFileLinks";
+import { remarkImageMarkers } from "../model/markdownImageMarkers";
 import { isAtxHeadingLine } from "../../files/model/markdownSource";
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { copyText } from "../../../platform/tauri/clipboard";
 import { openPathWithDefaultApp, revealPath } from "../../../platform/tauri/fs";
-import { INBOX_MEDIA_PREFIXES, isInboxMediaUrl } from "../../inbox/model/inboxMedia";
+import {
+  INBOX_MEDIA_PREFIXES,
+  isInboxMediaUrl,
+} from "../../inbox/model/inboxMedia";
 import { isNoteImagePath } from "../../notes";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { InboxMedia } from "../../inbox/ui/InboxMedia";
-import { rehypeWordFade, usePacedText, useWordFading } from "./wordFade";
+import { DocumentImage, ImageAltText } from "./DocumentImage";
+import { isLocalMediaPath, LocalMedia } from "./LocalMedia";
+import {
+  rehypeHoldImageSources,
+  rehypeRestoreImageSources,
+} from "./documentImageSources";
+import { rehypeHardBreaks } from "./hardBreaks";
+import {
+  pacedRevealPreferred,
+  rehypeWordFade,
+  useCadenceFade,
+  usePacedText,
+  useStreamedText,
+  useWordFading,
+  WORD_FADE_MS,
+} from "./wordFade";
+import { parseStreamingMarkdown } from "./streamingMarkdown";
+import { HighlightedCodeBlock } from "./HighlightedCodeBlock";
+import { TranscriptPacing, TranscriptVisibility } from "./transcriptVisibility";
+import { usePacedReveal } from "../../settings/model/displayPrefs";
+import {
+  useStreamPresentation,
+  type StreamMeasurement,
+} from "../model/streamingPerformance";
 
 const MERMAID_BASE_CONFIG = {
   startOnLoad: false,
@@ -60,22 +95,34 @@ const mermaid = createLazyMermaidPlugin({
   },
 });
 
-const MARKDOWN_PLUGINS = { code, mermaid };
+const MARKDOWN_PLUGINS = { code: boundedCode, mermaid };
+
+const MARKDOWN_HARDEN: Pluggable = [
+  harden,
+  {
+    // MarkdownImage remains the final allowlist. The wildcard lets app-owned
+    // relative note URLs reach that component without changing link parsing.
+    allowedImagePrefixes: ["*"],
+    allowedLinkPrefixes: ["*"],
+    allowDataImages: true,
+    imageBlockPolicy: "remove" as const,
+  },
+];
 
 const MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
   defaultRehypePlugins.sanitize,
-  [
-    harden,
-    {
-      // MarkdownImage remains the final allowlist. The wildcard lets app-owned
-      // relative note URLs reach that component without changing link parsing.
-      allowedImagePrefixes: ["*"],
-      allowedLinkPrefixes: ["*"],
-      allowDataImages: true,
-      imageBlockPolicy: "remove" as const,
-    },
-  ],
+  MARKDOWN_HARDEN,
+];
+
+// A project document keeps its image paths as written for MarkdownImage, which
+// resolves them and keeps them inside the project.
+const DOCUMENT_REHYPE_PLUGINS: PluggableList = [
+  defaultRehypePlugins.raw,
+  defaultRehypePlugins.sanitize,
+  rehypeHoldImageSources,
+  MARKDOWN_HARDEN,
+  rehypeRestoreImageSources,
 ];
 
 const INBOX_MEDIA_REHYPE_PLUGINS: PluggableList = [
@@ -104,6 +151,11 @@ const FADING_INBOX_MEDIA_REHYPE_PLUGINS: PluggableList = [
   rehypeWordFade,
 ];
 
+const FADING_DOCUMENT_REHYPE_PLUGINS: PluggableList = [
+  ...DOCUMENT_REHYPE_PLUGINS,
+  rehypeWordFade,
+];
+
 type FileLinkMenu = {
   x: number;
   y: number;
@@ -119,9 +171,16 @@ const FileOpenContext = createContext<{
     path: string,
     navigation?: EditorNavigation,
   ) => void;
+  /**
+   * The Markdown file a preview shows and the project it may load images
+   * from. Unset in chat, where images keep their own rules.
+   */
+  documentImages?: { documentPath: string; root: string };
 }>({});
 
 const RemoteMediaContext = createContext(false);
+/** Show local images and videos a reply links to, rather than the links. */
+const LocalMediaContext = createContext(false);
 
 const REVEAL_LABEL = IS_MAC
   ? "Reveal in Finder"
@@ -208,6 +267,19 @@ const LANGUAGE_FILE_NAMES: Record<string, string> = {
   zsh: "code.sh",
 };
 
+// Shiki (via Streamdown's CodeBlock) treats these as plaintext and renders no
+// syntax colors at all, which is common in agent output (pseudocode, file
+// trees, command output) fenced as `text` or left untagged. Falling back to
+// the JS grammar for these still colors strings, numbers, and punctuation,
+// matching what most agent-output fences actually look like.
+const PLAINTEXT_FENCE_LANGUAGES = new Set(["text", "plaintext", "txt", ""]);
+
+function highlightLanguageFor(language: string): string {
+  return PLAINTEXT_FENCE_LANGUAGES.has(language.toLowerCase())
+    ? "js"
+    : language;
+}
+
 type MarkdownLinkProps = ComponentProps<"a"> & { node?: unknown };
 
 function MarkdownLink({
@@ -224,11 +296,12 @@ function MarkdownLink({
   const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
   const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
   const label = textContent(children);
+  const localMedia = useContext(LocalMediaContext);
   if (allowRemoteMedia && href && isInboxMediaUrl(href)) {
     return <InboxMedia src={href} alt={label} />;
   }
 
-  return (
+  const link = (
     <a
       href={href}
       className={`text-sky-400/90 hover:text-sky-300 hover:underline ${className ?? ""}`}
@@ -258,6 +331,17 @@ function MarkdownLink({
       {children}
     </a>
   );
+  if (localMedia && file && isLocalMediaPath(file.path)) {
+    return (
+      <LocalMedia
+        path={file.path}
+        label={label}
+        onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
+        fallback={link}
+      />
+    );
+  }
+  return link;
 }
 
 type MarkdownCodeProps = ComponentProps<"code"> & { node?: unknown };
@@ -330,6 +414,15 @@ function MarkdownCode({
     (fence.language ? fileNameForLanguage(fence.language) : "");
   const lineNumbers = !/\bnoLineNumbers\b/.test(meta);
   const code = textContent(children);
+  // highlightLanguageFor swaps the fence language for "js" so Shiki still
+  // colors plaintext fences, but Streamdown's CodeBlock reuses that same
+  // value for the header label. Without this, a `text` fence would show a
+  // "js" header, and an untagged fence would gain a header it never had.
+  // Render our own label with the original language instead, and hide
+  // Streamdown's via CSS (see .markdown-code-fallback-label in index.css).
+  const isPlaintextFallback = PLAINTEXT_FENCE_LANGUAGES.has(
+    fence.language.toLowerCase(),
+  );
 
   return (
     <div className="markdown-code-shell" dir="ltr">
@@ -340,13 +433,14 @@ function MarkdownCode({
       ) : null}
       {fence.filePath ? (
         <MarkdownCodePath path={fence.filePath} startLine={fence.startLine} />
+      ) : isPlaintextFallback ? (
+        <span className="markdown-code-fallback-label">{fence.language}</span>
       ) : null}
       <CodeCopyButton code={code} />
-      <CodeBlock
-        className={className}
+      <HighlightedCodeBlock
         code={code}
         isIncomplete={incomplete}
-        language={fence.language}
+        language={highlightLanguageFor(fence.language)}
         lineNumbers={lineNumbers}
         startLine={fence.startLine}
       />
@@ -441,6 +535,8 @@ function MarkdownImage({
   ...props
 }: MarkdownImageProps) {
   const allowRemoteMedia = useContext(RemoteMediaContext);
+  const localMedia = useContext(LocalMediaContext);
+  const { cwd, onOpenFile, documentImages } = useContext(FileOpenContext);
   const url = typeof src === "string" ? src.trim() : "";
   if (url.startsWith("data:image/")) {
     return <img {...props} src={url} alt={alt ?? ""} />;
@@ -448,30 +544,126 @@ function MarkdownImage({
   if (isNoteImagePath(url)) {
     return <NoteAssetImage {...props} asset={url} alt={alt} />;
   }
+  if (documentImages) {
+    const image = resolveDocumentImage(
+      url,
+      documentImages.documentPath,
+      documentImages.root,
+    );
+    if (!image) return <ImageAltText alt={alt} title={url || undefined} />;
+    return (
+      <DocumentImage
+        path={image.path}
+        root={documentImages.root}
+        relative={image.relative}
+        alt={alt}
+        title={props.title}
+        width={props.width}
+        height={props.height}
+        align={(props as { align?: string }).align}
+      />
+    );
+  }
+  const file =
+    localMedia && url && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)
+      ? resolveWorkspaceFileReference(url, cwd)
+      : undefined;
+  if (file && isLocalMediaPath(file.path)) {
+    return (
+      <LocalMedia
+        path={file.path}
+        label={alt ?? ""}
+        onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
+        fallback={null}
+      />
+    );
+  }
   if (!allowRemoteMedia || !url || !isInboxMediaUrl(url)) return null;
   return <InboxMedia src={url} alt={alt} />;
+}
+
+/**
+ * A document's `<picture>` shows its `<img>`, which loads through
+ * MarkdownImage. A `<source>` would make the webview fetch its own URL
+ * instead, so documents drop them.
+ */
+function MarkdownPictureSource({
+  node: _node,
+  ...props
+}: ComponentProps<"source"> & { node?: unknown }) {
+  const { documentImages } = useContext(FileOpenContext);
+  return documentImages ? null : <source {...props} />;
 }
 
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
   code: MarkdownCode,
   img: MarkdownImage,
+  source: MarkdownPictureSource,
 } satisfies Components;
+
+/**
+ * With dir="auto" Streamdown wraps each block in
+ * `<div dir="..." style="display: contents">`. WebKit's triple-click then runs
+ * past the block to the end of the reply, because a contents box gives the
+ * selection no block boundary to stop at (#496). Keep the per-block direction
+ * but put it on a real block box; index.css zeroes its margins so spacing still
+ * comes from the block inside it.
+ */
+const MarkdownCommit = createContext<
+  ((index: number, content: string) => void) | null
+>(null);
+
+function DirectionalBlock({ dir, ...props }: BlockProps) {
+  const committed = useContext(MarkdownCommit);
+  useLayoutEffect(() => {
+    committed?.(props.index, props.content);
+  }, [committed, props.index, props.content]);
+  // The word-fade plugin marks changed ancestors for Streamdown's memoized
+  // elements, so removing its spans can reconcile the existing block.
+  // A fade-end key change also tears down nested code/media in lists and can
+  // briefly collapse the reply, clamping the transcript's scroll position.
+  const block = <Block {...props} />;
+  return dir ? (
+    <div dir={dir} className="agent-markdown-block">
+      {block}
+    </div>
+  ) : (
+    block
+  );
+}
 
 export const AgentMarkdown = memo(function AgentMarkdown({
   text,
+  measurement,
   streaming,
+  revealOnMount,
   className,
   cwd,
   onOpenFile,
   allowRemoteMedia,
+  localMedia,
+  hardBreaks,
+  documentPath,
 }: {
   text: string;
+  measurement?: StreamMeasurement;
   streaming?: boolean;
+  /** Pace newly arrived output even if it finished before its first paint. */
+  revealOnMount?: boolean;
   className?: string;
   cwd?: string;
   onOpenFile?: OpenFileFn;
   allowRemoteMedia?: boolean;
+  /** Show local images and videos the text links to, in place of the links. */
+  localMedia?: boolean;
+  /** Show a newline inside a block as a line break, as a document does (#591). */
+  hardBreaks?: boolean;
+  /**
+   * The Markdown file this text is, which shows the images it refers to in its
+   * project, `cwd`.
+   */
+  documentPath?: string;
 }) {
   const [fileMenu, setFileMenu] = useState<FileLinkMenu | null>(null);
   const [fileActionError, setFileActionError] = useState<string | null>(null);
@@ -484,30 +676,94 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     [],
   );
   const fileOpen = useMemo(
-    () => ({ cwd, onOpenFile, onFileContextMenu }),
-    [cwd, onOpenFile, onFileContextMenu],
+    () => ({
+      cwd,
+      onOpenFile,
+      onFileContextMenu,
+      documentImages:
+        documentPath && cwd ? { documentPath, root: cwd } : undefined,
+    }),
+    [cwd, onOpenFile, onFileContextMenu, documentPath],
   );
-  const remarkPlugins = useMemo<PluggableList>(
-    () => [
-      ...Object.values(defaultRemarkPlugins),
-      [remarkWorkspaceFileLinks, { cwd }],
-    ],
-    [cwd],
-  );
+  const remarkPlugins = useMemo<PluggableList>(() => {
+    const plugins: PluggableList = [...Object.values(defaultRemarkPlugins)];
+    // Markers become images before file paths in their text turn into links.
+    if (localMedia) plugins.push([remarkImageMarkers, { cwd }]);
+    plugins.push([remarkWorkspaceFileLinks, { cwd }]);
+    return plugins;
+  }, [cwd, localMedia]);
   const remoteMedia = !!allowRemoteMedia;
-  const paced = usePacedText(text, !!streaming);
-  const fading = useWordFading(!!streaming || paced.revealing);
-  // Once a reply has streamed its words stay spans: dropping them would swap
-  // every word's element and could catch the last few mid-fade.
-  const streamed = useRef(!!streaming);
-  if (streaming) streamed.current = true;
-  const rehypePlugins = streamed.current
+  const visible = useContext(TranscriptVisibility);
+  const pace = useContext(TranscriptPacing);
+  const pacingEnabled = usePacedReveal();
+  const pacedReveal = pace && pacingEnabled && pacedRevealPreferred();
+  // Both hooks keep their identity when the preference changes during a reply.
+  const smooth = usePacedText(
+    text,
+    !!streaming,
+    revealOnMount,
+    visible && pacedReveal,
+  );
+  const immediate = useStreamedText(
+    text,
+    !!streaming,
+    revealOnMount,
+    visible && !pacedReveal,
+  );
+  const paced = pacedReveal ? smooth : immediate;
+  const presented = useStreamPresentation(measurement, text.length, visible);
+  // Only instrumentation needs the expected block list outside Streamdown.
+  // Feed that same list to its parser so measuring never doubles the parsing.
+  const measuredBlocks = useMemo(
+    () => (measurement ? parseStreamingMarkdown(paced.text) : undefined),
+    [measurement, paced.text],
+  );
+  const parseBlocks = useCallback(
+    (source: string) => measuredBlocks ?? parseStreamingMarkdown(source),
+    [measuredBlocks],
+  );
+  const blockCommitted = useMemo(() => {
+    if (!measuredBlocks) return null;
+    const committed = new Set<number>();
+    return (index: number, content: string) => {
+      if (measuredBlocks[index] !== content) return;
+      committed.add(index);
+      if (committed.size === measuredBlocks.length)
+        presented(paced.text.length);
+    };
+  }, [measuredBlocks, paced.text.length, presented]);
+  const cadence = useCadenceFade(paced.text);
+  const fadeMs = pacedReveal ? WORD_FADE_MS : cadence.durationMs;
+  const fading = useWordFading(!!streaming || paced.revealing, fadeMs);
+  const fadeStyle = pacedReveal
+    ? undefined
+    : ({
+        "--word-fade-ms": `${fadeMs}ms`,
+        "--word-fade-ease": cadence.easing,
+      } as CSSProperties);
+  // Spans stay while words are fading so a word already on screen keeps its
+  // element. Dropping one mid-fade would remount it and fade it again. Once
+  // the fade is over they come off, or a finished reply would keep a span per
+  // word for as long as this transcript stays mounted.
+  const isDocument = !!fileOpen.documentImages;
+  const baseRehypePlugins = fading
     ? remoteMedia
       ? FADING_INBOX_MEDIA_REHYPE_PLUGINS
-      : FADING_MARKDOWN_REHYPE_PLUGINS
+      : isDocument
+        ? FADING_DOCUMENT_REHYPE_PLUGINS
+        : FADING_MARKDOWN_REHYPE_PLUGINS
     : remoteMedia
       ? INBOX_MEDIA_REHYPE_PLUGINS
-      : MARKDOWN_REHYPE_PLUGINS;
+      : isDocument
+        ? DOCUMENT_REHYPE_PLUGINS
+        : MARKDOWN_REHYPE_PLUGINS;
+  // Hard breaks go last, so nothing after them undoes them, and after the word
+  // fade, whose word spans would otherwise hide the newlines from them.
+  const rehypePlugins = useMemo(
+    () =>
+      hardBreaks ? [...baseRehypePlugins, rehypeHardBreaks] : baseRehypePlugins,
+    [baseRehypePlugins, hardBreaks],
+  );
 
   const onFileMenuPick = (id: string) => {
     if (!fileMenu) return;
@@ -548,38 +804,48 @@ export const AgentMarkdown = memo(function AgentMarkdown({
 
   return (
     <RemoteMediaContext.Provider value={remoteMedia}>
-      <FileOpenContext.Provider value={fileOpen}>
-        <>
-          <Streamdown
-            className={`agent-markdown min-w-0 font-sans text-sm leading-6 ${fading ? "word-fading" : ""} ${className ?? ""}`}
-            components={MARKDOWN_COMPONENTS}
-            controls={false}
-            dir="auto"
-            isAnimating={!!streaming || paced.revealing}
-            plugins={MARKDOWN_PLUGINS}
-            remarkPlugins={remarkPlugins}
-            rehypePlugins={rehypePlugins}
-          >
-            {paced.text}
-          </Streamdown>
-          {fileMenu ? (
-            <ExplorerMenu
-              x={fileMenu.x}
-              y={fileMenu.y}
-              items={fileLinkMenuItems(!!onOpenFile, !!cwd)}
-              ariaLabel="File link actions"
-              onPick={onFileMenuPick}
-              onClose={() => setFileMenu(null)}
-            />
-          ) : null}
-          {fileActionError ? (
-            <FileActionError
-              message={fileActionError}
-              onDismiss={() => setFileActionError(null)}
-            />
-          ) : null}
-        </>
-      </FileOpenContext.Provider>
+      <LocalMediaContext.Provider value={!!localMedia}>
+        <FileOpenContext.Provider value={fileOpen}>
+          <>
+            {/* Streamdown takes no style; a contents box passes the fade timing down. */}
+            <div className="contents" style={fadeStyle}>
+              <MarkdownCommit.Provider value={blockCommitted}>
+                <Streamdown
+                  BlockComponent={DirectionalBlock}
+                  className={`agent-markdown min-w-0 font-sans text-sm leading-6 ${fading ? "word-fading" : ""} ${className ?? ""}`}
+                  components={MARKDOWN_COMPONENTS}
+                  controls={false}
+                  dir="auto"
+                  isAnimating={!!streaming || paced.revealing}
+                  parseIncompleteMarkdown={false}
+                  parseMarkdownIntoBlocksFn={parseBlocks}
+                  plugins={MARKDOWN_PLUGINS}
+                  remarkPlugins={remarkPlugins}
+                  rehypePlugins={rehypePlugins}
+                >
+                  {paced.text}
+                </Streamdown>
+              </MarkdownCommit.Provider>
+            </div>
+            {fileMenu ? (
+              <ExplorerMenu
+                x={fileMenu.x}
+                y={fileMenu.y}
+                items={fileLinkMenuItems(!!onOpenFile, !!cwd)}
+                ariaLabel="File link actions"
+                onPick={onFileMenuPick}
+                onClose={() => setFileMenu(null)}
+              />
+            ) : null}
+            {fileActionError ? (
+              <FileActionError
+                message={fileActionError}
+                onDismiss={() => setFileActionError(null)}
+              />
+            ) : null}
+          </>
+        </FileOpenContext.Provider>
+      </LocalMediaContext.Provider>
     </RemoteMediaContext.Provider>
   );
 });
@@ -590,12 +856,17 @@ export const MarkdownPreview = memo(function MarkdownPreview({
   cwd,
   onOpenFile,
   header,
+  hardBreaks,
+  documentPath,
 }: {
   text: string;
   streaming?: boolean;
   cwd?: string;
   onOpenFile?: OpenFileFn;
   header?: ReactNode;
+  hardBreaks?: boolean;
+  /** The Markdown file shown, whose images load from the project, `cwd`. */
+  documentPath?: string;
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
 
@@ -614,6 +885,8 @@ export const MarkdownPreview = memo(function MarkdownPreview({
           streaming={streaming}
           cwd={cwd}
           onOpenFile={onOpenFile}
+          hardBreaks={hardBreaks}
+          documentPath={documentPath}
         />
       </div>
     </div>

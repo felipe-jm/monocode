@@ -156,6 +156,7 @@ async function promptOnLive(input: {
   signal?: AbortSignal;
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
+  input.signal?.throwIfAborted();
   const model = pickTextModel(input.model);
   const settings = textSettings(model, input.modelSettings, input.intent);
   const session = await ensureLive(
@@ -164,6 +165,7 @@ async function promptOnLive(input: {
     model,
     settings,
   );
+  input.signal?.throwIfAborted();
   session.output = "";
   session.collecting = true;
   session.onEvent = input.onEvent;
@@ -300,6 +302,7 @@ async function startLive(
       }),
       cwd,
       { provider: "claude", id: providerAccountId ?? "default" },
+      "claude",
     );
     live = session;
     await waitForReady(session, INIT_TIMEOUT_MS);

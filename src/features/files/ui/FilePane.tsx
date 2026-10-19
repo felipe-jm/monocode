@@ -1,3 +1,4 @@
+import { lazySurface } from "../../../shared/ui/lazySurface";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { memo, useSyncExternalStore } from "react";
 import {
@@ -17,29 +18,50 @@ import {
   type EditorPane,
   type FilePaneTab,
 } from "../../workspace/model/layout";
-import { isImagePath } from "../model/filePreview";
+import { isImagePath, isVideoPath } from "../model/filePreview";
 import type { TerminalMetaPatch } from "../../terminal/model/terminalTab";
 import type { EditorNavigationTarget } from "../../search/model/search";
 import { editorPathsEqual } from "../../search/model/search";
 import type { PlanBuildTarget, Session } from "../../sessions/model/session";
 import { Play } from "../../../shared/ui/icons";
 import { BuildTargetButton } from "../../sessions/ui/SecondOpinionButton";
-import { loadDiffViewer, subscribeDiffViewer } from "../../settings/model/settings";
+import {
+  loadDiffViewer,
+  subscribeDiffViewer,
+} from "../../settings/model/settings";
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
-import { CommitDiff } from "../../source-control/ui/CommitDiff";
-import { FileEditor } from "./FileEditor";
 import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
-import { SessionChangesDiff } from "../../source-control/ui/SessionChangesDiff";
-import { TerminalView } from "../../terminal/ui/TerminalView";
-import { WorkingTreeDiff } from "../../source-control/ui/WorkingTreeDiff";
+import { WorkingTreeDiffSurface as WorkingTreeDiff } from "../../source-control/ui/workingTreeDiffSurface";
+import { isRemoteProjectPath } from "../../projects/model/recents";
+
+const CommitDiff = lazySurface(async () => {
+  const module = await import("../../source-control/ui/CommitDiff");
+  return { default: module.CommitDiff };
+});
+const FileEditor = lazySurface(async () => {
+  const module = await import("./FileEditor");
+  return { default: module.FileEditor };
+});
+const SessionChangesDiff = lazySurface(async () => {
+  const module = await import("../../source-control/ui/SessionChangesDiff");
+  return { default: module.SessionChangesDiff };
+});
+const TerminalView = lazySurface(async () => {
+  const module = await import("../../terminal/ui/TerminalView");
+  return { default: module.TerminalView };
+});
 
 type Props = {
   pane: EditorPane;
   focused: boolean;
+  /** The containing workspace tab can stay mounted while hidden. */
+  visible?: boolean;
   /** The title bar already names a standalone file, so avoid repeating it. */
   showTabs?: boolean;
+  /** Shows the tabs but holds off mounting the files, as a pane slides in. */
+  deferBody?: boolean;
   dirtyFileIds: Set<string>;
   fileErrorCounts: Map<string, number>;
   sessions: Session[];
@@ -66,7 +88,9 @@ type Props = {
 function FilePaneComponent({
   pane,
   focused,
+  visible = true,
   showTabs = true,
+  deferBody = false,
   dirtyFileIds,
   fileErrorCounts,
   sessions,
@@ -90,16 +114,6 @@ function FilePaneComponent({
     loadDiffViewer,
     loadDiffViewer,
   );
-  const activeFile = pane.files.find((file) => file.id === pane.activeFileId);
-  const sessionReview =
-    activeFile && isSessionChangesTab(activeFile) ? activeFile : undefined;
-  const unifiedReview =
-    !!activeFile &&
-    !sessionReview &&
-    (isChangesTab(activeFile) ||
-      (diffViewer === "unified" && isReviewTab(activeFile)));
-  const commitReview = !!activeFile && isCommitTab(activeFile);
-
   return (
     <div
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
@@ -119,36 +133,14 @@ function FilePaneComponent({
           onPaneDragStart={onPaneDragStart}
         />
       ) : null}
-      <div className="relative min-h-0 flex-1">
-        {sessionReview ? (
-          <div className="absolute inset-0 h-full">
-            <SessionChangesDiff
-              cwd={sessionReview.cwd}
-              sessionId={sessionReview.sessionChanges.sessionId}
-              focusPath={sessionReview.path}
-            />
-          </div>
-        ) : commitReview && activeFile?.commit ? (
-          <div className="absolute inset-0 h-full">
-            <CommitDiff cwd={activeFile.cwd} sha={activeFile.commit.sha} />
-          </div>
-        ) : unifiedReview && activeFile ? (
-          <div className="absolute inset-0 h-full">
-            <WorkingTreeDiff
-              cwd={activeFile.cwd}
-              focusPath={activeFile.path}
-              focusKind={activeFile.changeKind}
-            />
-          </div>
-        ) : null}
-        {pane.files.map((file) => {
-          if (
-            isCommitTab(file) ||
+      <div data-pane-body="" className="relative min-h-0 flex-1">
+        {(deferBody ? [] : pane.files).map((file) => {
+          // Keep review state alive just like an editor; visibility suspends
+          // its rendering and background work until the tab is active again.
+          const active = visible && file.id === pane.activeFileId;
+          const unifiedReview =
             isChangesTab(file) ||
-            isSessionChangesTab(file) ||
-            (unifiedReview && isReviewTab(file))
-          )
-            return null;
+            (diffViewer === "unified" && isReviewTab(file));
           return (
             <div
               key={file.id}
@@ -159,13 +151,33 @@ function FilePaneComponent({
                   : "hidden"
               }
             >
-              {isAgentTab(file) ? (
+              {isSessionChangesTab(file) ? (
+                <SessionChangesDiff
+                  visible={active}
+                  cwd={file.cwd}
+                  sessionId={file.sessionChanges.sessionId}
+                  focusPath={file.path}
+                />
+              ) : isCommitTab(file) ? (
+                <CommitDiff
+                  cwd={file.cwd}
+                  sha={file.commit.sha}
+                  visible={active}
+                />
+              ) : unifiedReview ? (
+                <WorkingTreeDiff
+                  visible={active}
+                  cwd={file.cwd}
+                  focusPath={file.path}
+                  focusKind={file.changeKind}
+                />
+              ) : isAgentTab(file) ? (
                 <AgentTabView
                   title={file.path}
                   session={sessions.find(
                     (entry) => entry.id === file.agent.sessionId,
                   )}
-                  visible={file.id === pane.activeFileId}
+                  visible={visible && file.id === pane.activeFileId}
                   focused={focused && file.id === pane.activeFileId}
                   onOpenFile={onOpenFile}
                 />
@@ -188,8 +200,12 @@ function FilePaneComponent({
                     onTerminalMetaChange?.(file.id, patch)
                   }
                 />
-              ) : isImagePath(file.path) ? (
-                <BinaryFileView path={file.path} cwd={file.cwd} />
+              ) : isImagePath(file.path) || isVideoPath(file.path) ? (
+                <BinaryFileView
+                  path={file.path}
+                  cwd={file.cwd}
+                  visible={visible && file.id === pane.activeFileId}
+                />
               ) : (
                 <FileEditor
                   path={file.path}
@@ -223,7 +239,9 @@ export const FilePane = memo(FilePaneComponent, (previous, next) => {
   if (
     previous.pane !== next.pane ||
     previous.focused !== next.focused ||
+    previous.visible !== next.visible ||
     previous.showTabs !== next.showTabs ||
+    previous.deferBody !== next.deferBody ||
     previous.dirtyFileIds !== next.dirtyFileIds ||
     previous.fileErrorCounts !== next.fileErrorCounts ||
     previous.onFocus !== next.onFocus ||
@@ -282,6 +300,7 @@ function PlanSurface({
   const block = plan
     ? session?.blocks.find((entry) => entry.id === plan.blockId)
     : undefined;
+  const remote = !!session && isRemoteProjectPath(session.cwd);
 
   if (!block || !plan) {
     return (
@@ -332,7 +351,7 @@ function PlanSurface({
               <Play className="size-3" />
               {buildLabel}
             </button>
-            {session ? (
+            {session && !remote ? (
               <BuildTargetButton
                 from={session.harness}
                 model={session.model}
@@ -351,6 +370,7 @@ function PlanSurface({
             spellCheck={false}
             value={block.text}
             disabled={
+              remote ||
               block.plan?.status === "streaming" ||
               block.plan?.status === "building" ||
               block.plan?.status === "built"
