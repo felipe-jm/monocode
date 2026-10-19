@@ -36,18 +36,11 @@ import {
 } from "../../../shared/lib/paths";
 import type { EditorNavigation, OpenFileFn } from "../../search/model/search";
 import { remarkWorkspaceFileLinks } from "../../files/model/markdownFileLinks";
-import { isImagePath, sniffImageMime } from "../../files/model/filePreview";
-import { remarkLocalImages } from "../model/markdownLocalImages";
-import { ImageLightbox } from "../../../shared/ui/ImageLightbox";
 import { isAtxHeadingLine } from "../../files/model/markdownSource";
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { copyText } from "../../../platform/tauri/clipboard";
-import {
-  openPathWithDefaultApp,
-  readBinaryFile,
-  revealPath,
-} from "../../../platform/tauri/fs";
+import { openPathWithDefaultApp, revealPath } from "../../../platform/tauri/fs";
 import { INBOX_MEDIA_PREFIXES, isInboxMediaUrl } from "../../inbox/model/inboxMedia";
 import { isNoteImagePath } from "../../notes";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
@@ -441,89 +434,6 @@ function NoteAssetImage({
   );
 }
 
-type LocalImageState =
-  | { status: "loading" }
-  | { status: "ready"; url: string }
-  | { status: "failed" };
-
-/** An image file on disk an agent pointed at, opened full screen on click. */
-function LocalImage({ path, alt }: { path: string; alt: string }) {
-  const { onFileContextMenu } = useContext(FileOpenContext);
-  const [state, setState] = useState<LocalImageState>({ status: "loading" });
-  const [previewOpen, setPreviewOpen] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    let created: string | null = null;
-    setState({ status: "loading" });
-    readBinaryFile(path).then(
-      (bytes) => {
-        if (cancelled) return;
-        // MIME from the bytes, never the name, so markup saved as `.png`
-        // cannot become a same-origin document.
-        const mime = sniffImageMime(bytes);
-        if (!mime) {
-          setState({ status: "failed" });
-          return;
-        }
-        created = URL.createObjectURL(new Blob([bytes], { type: mime }));
-        setState({ status: "ready", url: created });
-      },
-      () => {
-        if (!cancelled) setState({ status: "failed" });
-      },
-    );
-    return () => {
-      cancelled = true;
-      if (created) URL.revokeObjectURL(created);
-    };
-  }, [path]);
-
-  const label = alt || path;
-  if (state.status !== "ready") {
-    return (
-      <span
-        data-local-image={state.status}
-        title={path}
-        className="inline-flex max-w-full items-center rounded-md bg-content/7 px-1.5 py-0.5 font-mono text-[12px] text-content/55"
-      >
-        <span className="truncate">
-          {state.status === "loading" ? label : `Couldn’t load image: ${path}`}
-        </span>
-      </span>
-    );
-  }
-  return (
-    <>
-      <button
-        type="button"
-        aria-label={`Open ${label} full screen`}
-        title={path}
-        onClick={(event) => {
-          event.stopPropagation();
-          setPreviewOpen(true);
-        }}
-        onContextMenu={(event) => onFileContextMenu?.(event, path)}
-        className="my-1 block max-w-full cursor-zoom-in rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      >
-        <img
-          src={state.url}
-          alt={label}
-          draggable={false}
-          className="max-h-80 max-w-full rounded-lg border border-content/10 object-contain"
-        />
-      </button>
-      {previewOpen ? (
-        <ImageLightbox
-          src={state.url}
-          alt={label}
-          onClose={() => setPreviewOpen(false)}
-        />
-      ) : null}
-    </>
-  );
-}
-
 function MarkdownImage({
   src,
   alt,
@@ -531,7 +441,6 @@ function MarkdownImage({
   ...props
 }: MarkdownImageProps) {
   const allowRemoteMedia = useContext(RemoteMediaContext);
-  const { cwd } = useContext(FileOpenContext);
   const url = typeof src === "string" ? src.trim() : "";
   if (url.startsWith("data:image/")) {
     return <img {...props} src={url} alt={alt ?? ""} />;
@@ -539,13 +448,8 @@ function MarkdownImage({
   if (isNoteImagePath(url)) {
     return <NoteAssetImage {...props} asset={url} alt={alt} />;
   }
-  if (allowRemoteMedia) {
-    return url && isInboxMediaUrl(url) ? <InboxMedia src={url} alt={alt} /> : null;
-  }
-  // Bytes stay in a local blob URL, so showing a local file leaks nothing.
-  const file = url ? resolveWorkspaceFileReference(url, cwd) : undefined;
-  if (!file || !isImagePath(file.path)) return null;
-  return <LocalImage path={file.path} alt={alt ?? ""} />;
+  if (!allowRemoteMedia || !url || !isInboxMediaUrl(url)) return null;
+  return <InboxMedia src={url} alt={alt} />;
 }
 
 const MARKDOWN_COMPONENTS = {
@@ -587,7 +491,6 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     () => [
       ...Object.values(defaultRemarkPlugins),
       [remarkWorkspaceFileLinks, { cwd }],
-      [remarkLocalImages, { cwd }],
     ],
     [cwd],
   );
