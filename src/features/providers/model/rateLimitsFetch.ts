@@ -182,7 +182,7 @@ export async function fetchOmpRateLimits(
   try {
     const { path } = await resolveOmpBinary();
     return parseOmpUsage(
-      await execChild(path, ["usage", "--json"]),
+      await execChild(path, ["usage", "--json"], undefined, "omp"),
       modelProvider,
     );
   } catch (error) {
