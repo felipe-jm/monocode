@@ -59,6 +59,7 @@ import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { InboxMedia } from "../../inbox/ui/InboxMedia";
 import { DocumentImage, ImageAltText } from "./DocumentImage";
 import { isLocalMediaPath, LocalMedia } from "./LocalMedia";
+import { ImageLightbox } from "../../../shared/ui/ImageLightbox";
 import {
   rehypeHoldImageSources,
   rehypeRestoreImageSources,
@@ -943,6 +944,7 @@ function MermaidBlock({
 }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const colorScheme = useColorScheme();
 
   useEffect(() => {
@@ -997,12 +999,31 @@ function MermaidBlock({
   }
 
   return (
-    <div
-      className="mermaid-block overflow-x-auto rounded-[10px] border border-content/10 bg-content/6 p-3"
-      data-streamdown="mermaid-block"
-      dir="ltr"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <>
+      <div
+        className="mermaid-block overflow-x-auto rounded-[10px] border border-content/10 bg-content/6 p-3"
+        data-streamdown="mermaid-block"
+        dir="ltr"
+        role="button"
+        tabIndex={0}
+        aria-label="Open diagram full screen"
+        title="Open full screen"
+        onClick={() => setExpanded(true)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          setExpanded(true);
+        }}
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+      {expanded ? (
+        <ImageLightbox
+          svg={svg}
+          alt="Diagram"
+          onClose={() => setExpanded(false)}
+        />
+      ) : null}
+    </>
   );
 }
 

@@ -2540,6 +2540,22 @@ html:not(.theme-light) .markdown-code-token {
   margin-inline: auto;
 }
 
+.agent-markdown .mermaid-block {
+  cursor: zoom-in;
+}
+
+.diagram-lightbox {
+  background: var(--color-background-base);
+}
+
+/* Mermaid caps its SVG at the drawn width; the full-screen view scales it to fit. */
+.diagram-lightbox svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none !important;
+}
+
 .agent-markdown .inbox-media {
   vertical-align: middle;
 }

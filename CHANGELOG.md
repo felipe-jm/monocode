@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The status bar lists the branches and pull requests the agent created in the current session, read from its completed `git checkout -b`, `git switch -c`, `git worktree add`, `git branch`, and `gh pr create` calls. A branch later deleted with `git branch -d` drops out. The newest two of each show inline, with **+N** opening the full list. Click a branch to copy its name, or a PR to open it on GitHub. When the session opened PRs in several repositories, each PR is labeled with its repository name.
 - Agent replies in sessions show the local images and videos they link to, as Mono chats already did. An `<image: path>` marker, which agents use to announce a picture they made, shows that image too; a relative path resolves against the session folder.
 - A project in the sidebar shows a small accent-colored dot next to its name when one of its sessions finished while you were looking elsewhere. In the new layout the dot sits on the project's space at the foot of the sidebar. The dot clears once you open each finished session, and is hidden while another session in the project is still working.
+- Clicking a Mermaid diagram in an agent reply, or pressing Enter on it, opens it full screen, sized to the diagram's proportions. Pinch, ⌘/Ctrl + scroll, or ⌘/Ctrl +/− zoom further, dragging pans, double-click toggles zoom, and Esc closes, as in the image preview.
 
 ### Fixed
 

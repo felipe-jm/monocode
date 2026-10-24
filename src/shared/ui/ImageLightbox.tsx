@@ -6,10 +6,13 @@ import { LAYER } from "../lib/layers";
 import { X } from "./icons";
 
 type Props = {
-  src: string;
   alt: string;
   onClose: () => void;
-};
+} & (
+  | { src: string; svg?: never }
+  /** Rendered inline so SVG labels and theme styles survive; must be sanitized markup. */
+  | { svg: string; src?: never }
+);
 
 type View = { scale: number; x: number; y: number };
 
@@ -19,10 +22,10 @@ const DOUBLE_CLICK_SCALE = 2.5;
 const KEY_ZOOM_STEP = 1.25;
 const IDENTITY: View = { scale: 1, x: 0, y: 0 };
 
-export function ImageLightbox({ src, alt, onClose }: Props) {
+export function ImageLightbox({ src, svg, alt, onClose }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
+  const imageRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const [view, setViewState] = useState<View>(IDENTITY);
@@ -124,7 +127,7 @@ export function ImageLightbox({ src, alt, onClose }: Props) {
     };
 
     const onDoubleClick = (event: MouseEvent) => {
-      if (event.target !== imageRef.current) return;
+      if (!imageRef.current?.contains(event.target as Node)) return;
       if (viewRef.current.scale > MIN_SCALE) setView(IDENTITY);
       else zoomAt(DOUBLE_CLICK_SCALE, event.clientX, event.clientY);
     };
@@ -146,7 +149,7 @@ export function ImageLightbox({ src, alt, onClose }: Props) {
     };
   }, []);
 
-  const startDrag = (event: React.PointerEvent<HTMLImageElement>) => {
+  const startDrag = (event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || viewRef.current.scale === MIN_SCALE) return;
     const container = containerRef.current;
     if (!container) return;
@@ -184,6 +187,15 @@ export function ImageLightbox({ src, alt, onClose }: Props) {
   };
 
   const zoomed = view.scale > MIN_SCALE;
+  const cursor = zoomed
+    ? dragging
+      ? "cursor-grabbing"
+      : "cursor-grab"
+    : "cursor-zoom-in";
+  const transform = {
+    transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+    transition: dragging ? undefined : "transform 60ms ease-out",
+  };
 
   return createPortal(
     <div
@@ -200,24 +212,31 @@ export function ImageLightbox({ src, alt, onClose }: Props) {
       }}
       onClick={(event) => event.stopPropagation()}
     >
-      <img
-        ref={imageRef}
-        src={src}
-        alt={alt}
-        draggable={false}
-        onPointerDown={startDrag}
-        className={`max-h-full max-w-full select-none object-contain shadow-2xl ${
-          zoomed
-            ? dragging
-              ? "cursor-grabbing"
-              : "cursor-grab"
-            : "cursor-zoom-in"
-        }`}
-        style={{
-          transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-          transition: dragging ? undefined : "transform 60ms ease-out",
-        }}
-      />
+      {svg != null ? (
+        <div
+          ref={(node) => {
+            imageRef.current = node;
+          }}
+          role="img"
+          aria-label={alt}
+          onPointerDown={startDrag}
+          className={`diagram-lightbox max-h-full select-none rounded-xl shadow-2xl ${cursor}`}
+          style={{ ...transform, ...svgFit(svg) }}
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      ) : (
+        <img
+          ref={(node) => {
+            imageRef.current = node;
+          }}
+          src={src}
+          alt={alt}
+          draggable={false}
+          onPointerDown={startDrag}
+          className={`max-h-full max-w-full select-none object-contain shadow-2xl ${cursor}`}
+          style={transform}
+        />
+      )}
       <button
         ref={closeRef}
         type="button"
@@ -253,5 +272,17 @@ function clampView(
     scale: view.scale,
     x: Math.min(maxX, Math.max(-maxX, view.x)),
     y: Math.min(maxY, Math.max(-maxY, view.y)),
+  };
+}
+
+// Fits the panel to the diagram's own proportions inside the padded viewport,
+// so a wide flowchart gets a wide panel instead of a screen of empty space.
+function svgFit(svg: string): React.CSSProperties {
+  const box = /viewBox="[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)"/.exec(svg);
+  const ratio = box ? Number(box[1]) / Number(box[2]) : 0;
+  if (!(ratio > 0) || !Number.isFinite(ratio)) return { width: "100%", height: "100%" };
+  return {
+    aspectRatio: `${ratio}`,
+    width: `min(100%, calc((100vh - 3rem) * ${ratio}))`,
   };
 }
