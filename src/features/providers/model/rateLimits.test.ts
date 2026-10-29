@@ -14,6 +14,7 @@ import {
   formatExtraUsageBalance,
   parseDevinUsage,
   parseOmpUsage,
+  parseOmpUsageReports,
   parseOpencodeGoUsage,
   parseResetTimestamp,
   rateLimitWindowTooltip,
@@ -396,6 +397,48 @@ describe("parseOmpUsage", () => {
       "devs3@example.com",
     );
     expect(parseOmpUsage(stdout, "openai-codex").accountEmail).toBeNull();
+  });
+
+  it("lists every account, including several of one provider and monthly caps", () => {
+    const reports = parseOmpUsageReports(
+      JSON.stringify({
+        reports: [
+          {
+            provider: "anthropic",
+            limits: [limit("anthropic:5h", 18_000_000, 0.39)],
+            metadata: { email: "first@example.com" },
+          },
+          {
+            provider: "anthropic",
+            limits: [
+              limit("anthropic:7d", 604_800_000, 1),
+              limit("anthropic:7d:fable", 604_800_000, 0.3, { tier: "fable" }),
+            ],
+            metadata: { email: "second@example.com" },
+          },
+          {
+            provider: "openai-codex",
+            limits: [limit("openai-codex:primary", 2_592_000_000, 0.7)],
+          },
+        ],
+      }),
+    );
+    expect(
+      reports.map(({ provider, limits }) => [
+        provider,
+        limits.accountEmail,
+        limits.session?.usedPercent ?? null,
+        limits.weekly?.usedPercent ?? null,
+        limits.monthly?.usedPercent ?? null,
+      ]),
+    ).toEqual([
+      ["anthropic", "first@example.com", 39, null, null],
+      ["anthropic", "second@example.com", null, 100, null],
+      ["openai-codex", null, null, null, 70],
+    ]);
+    expect(() => parseOmpUsageReports("not json")).toThrow(
+      "omp usage output was not JSON",
+    );
   });
 });
 

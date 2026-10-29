@@ -303,63 +303,92 @@ export function parseClaudeOAuthUsage(body: string): ProviderRateLimits {
   };
 }
 
+export type OmpUsageReport = {
+  /** omp's provider id, e.g. `anthropic` or `openai-codex`. */
+  provider: string;
+  limits: ProviderRateLimits;
+};
+
 /**
- * Parse `omp usage --json`, keeping the report for the provider that serves
- * the session's model. Tier-scoped caps (Claude's Fable week) are skipped:
- * the chip has one 5h and one weekly slot, and those belong to the shared caps.
+ * Every account report in `omp usage --json`, in omp's order. Tier-scoped caps
+ * (Claude's Fable week) are skipped: each account shows its shared 5h, weekly
+ * and monthly windows. Throws when the output is not omp's JSON.
+ */
+export function parseOmpUsageReports(stdout: string): OmpUsageReport[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("omp usage output was not JSON");
+  }
+  const reports = asRecord(parsed)?.reports;
+  return (Array.isArray(reports) ? reports : []).flatMap((raw) => {
+    const report = asRecord(raw);
+    if (!report || typeof report.provider !== "string") return [];
+    let session: RateLimitWindow | null = null;
+    let weekly: RateLimitWindow | null = null;
+    let monthly: RateLimitWindow | null = null;
+    for (const rawLimit of Array.isArray(report.limits) ? report.limits : []) {
+      const limit = asRecord(rawLimit);
+      if (!limit || asRecord(limit.scope)?.tier != null) continue;
+      const window = asRecord(limit.window);
+      const amount = asRecord(limit.amount);
+      const durationMs = window ? numberField(window, "durationMs") : null;
+      const usedFraction = amount ? numberField(amount, "usedFraction") : null;
+      if (durationMs == null || usedFraction == null) continue;
+      const mapped: RateLimitWindow = {
+        usedPercent: clampUsedPercent(usedFraction * 100),
+        windowMinutes: Math.round(durationMs / 60_000),
+        resetsAt: parseResetTimestamp(window?.resetsAt),
+      };
+      if (mapped.windowMinutes === SESSION_WINDOW_MINUTES) session ??= mapped;
+      else if (mapped.windowMinutes === WEEKLY_WINDOW_MINUTES) weekly ??= mapped;
+      else if (mapped.windowMinutes === MONTHLY_WINDOW_MINUTES) monthly ??= mapped;
+    }
+    const email = asRecord(report.metadata)?.email;
+    return [
+      {
+        provider: report.provider,
+        limits: {
+          provider: "omp",
+          session,
+          weekly,
+          monthly,
+          resetCredits: null,
+          accountEmail: typeof email === "string" && email ? email : null,
+          updatedAt: Date.now(),
+          error: null,
+          status: "ok",
+        },
+      },
+    ];
+  });
+}
+
+/**
+ * Parse `omp usage --json`, keeping the first report for the provider that
+ * serves the session's model.
  */
 export function parseOmpUsage(
   stdout: string,
   modelProvider: string | undefined,
 ): ProviderRateLimits {
-  let parsed: unknown;
+  let reports: OmpUsageReport[];
   try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return errorRateLimits("omp", "omp usage output was not JSON");
+    reports = parseOmpUsageReports(stdout);
+  } catch (error) {
+    return errorRateLimits("omp", (error as Error).message);
   }
-  const reports = asRecord(parsed)?.reports;
-  const report = (Array.isArray(reports) ? reports : [])
-    .map(asRecord)
-    .find(
-      (rec) => rec && (modelProvider == null || rec.provider === modelProvider),
-    );
+  const report = reports.find(
+    (entry) => modelProvider == null || entry.provider === modelProvider,
+  );
   if (!report) {
     return unavailableRateLimits(
       "omp",
       `omp has no usage report for ${modelProvider ?? "this model"}`,
     );
   }
-  let session: RateLimitWindow | null = null;
-  let weekly: RateLimitWindow | null = null;
-  for (const raw of Array.isArray(report.limits) ? report.limits : []) {
-    const limit = asRecord(raw);
-    if (!limit || asRecord(limit.scope)?.tier != null) continue;
-    const window = asRecord(limit.window);
-    const amount = asRecord(limit.amount);
-    const durationMs = window ? numberField(window, "durationMs") : null;
-    const usedFraction = amount ? numberField(amount, "usedFraction") : null;
-    if (durationMs == null || usedFraction == null) continue;
-    const mapped: RateLimitWindow = {
-      usedPercent: clampUsedPercent(usedFraction * 100),
-      windowMinutes: Math.round(durationMs / 60_000),
-      resetsAt: parseResetTimestamp(window?.resetsAt),
-    };
-    if (mapped.windowMinutes === SESSION_WINDOW_MINUTES) session ??= mapped;
-    else if (mapped.windowMinutes === WEEKLY_WINDOW_MINUTES) weekly ??= mapped;
-  }
-  const email = asRecord(report.metadata)?.email;
-  return {
-    provider: "omp",
-    session,
-    weekly,
-    monthly: null,
-    resetCredits: null,
-    accountEmail: typeof email === "string" && email ? email : null,
-    updatedAt: Date.now(),
-    error: null,
-    status: "ok",
-  };
+  return report.limits;
 }
 
 type CodexWindowSnapshot = {

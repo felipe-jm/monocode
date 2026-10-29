@@ -22,6 +22,9 @@ mod menu_bar;
 
 const TRAY: &str = "mono-menu-bar";
 const SELECT: &str = "mono-chat:";
+const USAGE: &str = "mono-usage:";
+/// Asks the window feeding the usage rows to open Settings → Accounts.
+const OPEN_ACCOUNTS: &str = "mono-menu-open-accounts";
 const CHANGED: &str = "mono_chat_changed";
 const REQUEST: &str = "mono_chat_request";
 /// A 384pt conversation plus the 56pt Mono rail beside it.
@@ -76,6 +79,9 @@ struct Pending {
 struct Inner {
     monos: Vec<MonoEntry>,
     menu_mascots: Vec<menu_bar::MenuMascot>,
+    /// Account usage listed above the actions, fed by one workspace window.
+    usage: Vec<menu_bar::UsageSection>,
+    usage_owner: Option<String>,
     views: HashMap<String, View>,
     hosts: HashMap<String, Vec<HostedMono>>,
     owners: HashMap<String, String>,
@@ -176,12 +182,14 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
     app.manage(MonoChatState::default());
     let mut tray = TrayIconBuilder::with_id(TRAY)
         .tooltip("Chat with a Mono")
-        .menu(&menu(app, &[], &[])?)
+        .menu(&menu(app, &[], &[], &[])?)
         .icon_as_template(true)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if let Some(mono_id) = id.strip_prefix(SELECT) {
                 let _ = open(app, mono_id.to_owned());
+            } else if id.starts_with(USAGE) {
+                open_accounts(app);
             } else if id == "mono-chat-composer" {
                 crate::quick_composer::open(app);
             } else if id == "mono-chat-quit" {
@@ -190,7 +198,7 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
         });
     tray = tray.icon(menu_bar_icon().map_err(std::io::Error::other)?);
     let tray = tray.build(app)?;
-    menu_bar::decorate(&tray)?;
+    menu_bar::decorate(&tray, &[])?;
     // Read natively so a hidden icon never flashes in before a window loads.
     if menu_bar_hidden_marker(app).is_some_and(|marker| marker.exists()) {
         tray.set_visible(false)?;
@@ -273,6 +281,7 @@ fn menu(
     app: &AppHandle,
     monos: &[MonoEntry],
     mascots: &[menu_bar::MenuMascot],
+    usage: &[menu_bar::UsageSection],
 ) -> tauri::Result<Menu<tauri::Wry>> {
     let header = MenuItemBuilder::with_id("mono-chat-header", "Monos")
         .enabled(false)
@@ -294,6 +303,21 @@ fn menu(
             }
             let item = item.build(app)?;
             builder = builder.item(&item);
+        }
+    }
+    let mut usage_index = 0;
+    for section in usage {
+        builder = builder.separator().item(
+            &MenuItemBuilder::with_id(format!("mono-usage-section:{}", section.title), &section.title)
+                .enabled(false)
+                .build(app)?,
+        );
+        for account in &section.accounts {
+            builder = builder.item(
+                &MenuItemBuilder::with_id(format!("{USAGE}{usage_index}"), account.menu_title())
+                    .build(app)?,
+            );
+            usage_index += 1;
         }
     }
     for action in &menu_bar::ACTIONS {
@@ -403,17 +427,8 @@ pub fn mono_chat_sync(
         (updated, menu_changed)
     };
     if roster_changed {
-        let (roster, mascots) = {
-            let state = app.state::<MonoChatState>();
-            let inner = state.0.lock().unwrap();
-            (inner.monos.clone(), inner.menu_mascots.clone())
-        };
-        if let Some(tray) = app.tray_by_id(TRAY).filter(|_| menu_changed) {
-            tray.set_menu(Some(
-                menu(&app, &roster, &mascots).map_err(|e| e.to_string())?,
-            ))
-            .map_err(|e| e.to_string())?;
-            menu_bar::decorate(&tray).map_err(|e| e.to_string())?;
+        if menu_changed {
+            rebuild_menu(&app)?;
         }
         let ids: Vec<_> = app
             .state::<MonoChatState>()
@@ -429,6 +444,70 @@ pub fn mono_chat_sync(
         }
     }
     Ok(())
+}
+
+/// Replaces the Mono menu with the current roster and usage.
+fn rebuild_menu(app: &AppHandle) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(TRAY) else {
+        return Ok(());
+    };
+    let (roster, mascots, usage) = {
+        let state = app.state::<MonoChatState>();
+        let inner = state.0.lock().unwrap();
+        (
+            inner.monos.clone(),
+            inner.menu_mascots.clone(),
+            inner.usage.clone(),
+        )
+    };
+    tray.set_menu(Some(
+        menu(app, &roster, &mascots, &usage).map_err(|e| e.to_string())?,
+    ))
+    .map_err(|e| e.to_string())?;
+    menu_bar::decorate(&tray, &usage).map_err(|e| e.to_string())
+}
+
+/// Usage rows for the Mono menu, already formatted by the workspace window.
+/// An empty list removes them.
+#[tauri::command]
+pub fn mono_menu_usage_sync(
+    app: AppHandle,
+    window: WebviewWindow,
+    sections: Vec<menu_bar::UsageSection>,
+) -> Result<(), String> {
+    workspace(&window)?;
+    {
+        let state = app.state::<MonoChatState>();
+        let mut inner = state.0.lock().unwrap();
+        if inner.usage == sections {
+            return Ok(());
+        }
+        inner.usage_owner = (!sections.is_empty()).then(|| window.label().to_owned());
+        inner.usage = sections;
+    }
+    rebuild_menu(&app)
+}
+
+/// Brings the window that feeds the usage rows forward on its Accounts page.
+fn open_accounts(app: &AppHandle) {
+    let owner = app
+        .state::<MonoChatState>()
+        .0
+        .lock()
+        .unwrap()
+        .usage_owner
+        .clone();
+    let Some(window) = owner.and_then(|label| app.get_webview_window(&label)) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = app.emit_to(
+        EventTarget::webview_window(window.label()),
+        OPEN_ACCOUNTS,
+        (),
+    );
 }
 
 fn owner(app: &AppHandle, mono_id: &str) -> Result<String, String> {

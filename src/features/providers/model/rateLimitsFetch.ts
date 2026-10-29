@@ -7,8 +7,10 @@ import {
   parseOmpUsage,
   parseDevinUsage,
   parseOpencodeGoUsage,
+  parseOmpUsageReports,
   unavailableRateLimits,
   type DevinUsage,
+  type OmpUsageReport,
   type ProviderRateLimits,
 } from "./rateLimits";
 import type { ProviderAccountIdentity } from "./providerAccountIdentity";
@@ -173,6 +175,21 @@ export async function fetchClaudeRateLimits(
       error instanceof Error ? error.message : "Claude usage unavailable",
     );
   }
+}
+
+/**
+ * Every account omp reports usage for, or null when omp is not installed.
+ * Throws when omp is installed but its usage cannot be read.
+ */
+export async function fetchOmpUsageReports(): Promise<OmpUsageReport[] | null> {
+  const path = await resolveOmpBinary().then(
+    (resolved) => resolved.path,
+    () => null,
+  );
+  if (path == null) return null;
+  return parseOmpUsageReports(
+    await execChild(path, ["usage", "--json"], undefined, "omp"),
+  );
 }
 
 /** Limits for the provider behind an omp session's model, read through omp's own accounts. */

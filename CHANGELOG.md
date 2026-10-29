@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent replies in sessions show the local images and videos they link to, as Mono chats already did. An `<image: path>` marker, which agents use to announce a picture they made, shows that image too; a relative path resolves against the session folder.
 - A project in the sidebar shows a small accent-colored dot next to its name when one of its sessions finished while you were looking elsewhere. In the new layout the dot sits on the project's space at the foot of the sidebar. The dot clears once you open each finished session, and is hidden while another session in the project is still working.
 - Clicking a Mermaid diagram in an agent reply, or pressing Enter on it, opens it full screen, sized to the diagram's proportions. Pinch, ⌘/Ctrl + scroll, or ⌘/Ctrl +/− zoom further, dragging pans, double-click toggles zoom, and Esc closes, as in the image preview.
+- On macOS, the Mono menu bar menu lists account usage above **Quick Composer**: every Claude account from Settings → Accounts, then every account `omp usage` reports (Claude, Codex, and others). Each account shows its 5-hour, weekly, or monthly windows as bars colored green, yellow (80% used), or red (90% used), with the percent and the clock time each window resets; an account without data shows why, such as an expired sign-in. The list refreshes every five minutes, and choosing an account opens Settings → Accounts.
 
 ### Fixed
 

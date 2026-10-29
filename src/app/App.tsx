@@ -644,6 +644,7 @@ import {
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { useFloatingMono } from "./hooks/useFloatingMono";
+import { useMenuBarUsage } from "./hooks/useMenuBarUsage";
 import {
   dropRelays,
   habitPostsContext,
@@ -13438,6 +13439,8 @@ function Workspace({
     () => openSettings("worktrees"),
     [openSettings],
   );
+
+  useMenuBarUsage(() => openSettings("providers", "provider-accounts"));
 
   useFloatingMono(sessions, monosSnap, monosEnabled, {
     open: (monoId) =>

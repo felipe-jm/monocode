@@ -11,13 +11,21 @@ use objc2::runtime::{AnyObject, Bool};
 use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBezierPath, NSColor, NSFont, NSFontWeightRegular,
-    NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem,
-    NSTextField, NSView,
+    NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView, NSLineBreakMode,
+    NSMenu, NSMenuItem, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use serde::Deserialize;
 
 const WIDTH: f64 = 260.0;
+/// Wide enough for two meters side by side, e.g. "Weekly · Fri 09:00 100%".
+const USAGE_WIDTH: f64 = 340.0;
+const USAGE_INSET: f64 = 16.0;
+const USAGE_ROW_HEIGHT: f64 = 54.0;
+const USAGE_DETAIL_ROW_HEIGHT: f64 = 42.0;
+const USAGE_HEADER_HEIGHT: f64 = 26.0;
+const METER_GAP: f64 = 14.0;
+const METER_BAR_HEIGHT: f64 = 4.0;
 const PORTRAIT_SIZE: f64 = 28.0;
 const ROW_HEIGHT: f64 = 34.0;
 /// Where AppKit placed the image and title of a plain item, so rows with a
@@ -70,7 +78,64 @@ struct MascotRect {
     fill: String,
 }
 
-pub(super) fn decorate(tray: &tauri::tray::TrayIcon) -> tauri::Result<()> {
+/// One block of the usage list, e.g. the Claude accounts or omp's accounts.
+/// The webview formats every string, so the menu only lays them out.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSection {
+    pub title: String,
+    note: Option<String>,
+    pub accounts: Vec<UsageAccount>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAccount {
+    title: String,
+    /// Shown instead of meters, e.g. "Claude sign-in expired".
+    detail: Option<String>,
+    meters: Vec<UsageMeter>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct UsageMeter {
+    caption: String,
+    value: String,
+    percent: f64,
+    tone: UsageTone,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum UsageTone {
+    Ok,
+    Warn,
+    Critical,
+}
+
+impl UsageAccount {
+    /// The item title. VoiceOver reads it, and `decorate` finds the account's
+    /// row by it, so it carries every number the row shows.
+    pub(super) fn menu_title(&self) -> String {
+        let summary = match &self.detail {
+            Some(detail) => detail.clone(),
+            None => self
+                .meters
+                .iter()
+                .map(|meter| format!("{} {}", meter.caption, meter.value))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        format!("{}: {summary}", self.title)
+    }
+}
+
+pub(super) fn decorate(
+    tray: &tauri::tray::TrayIcon,
+    usage: &[UsageSection],
+) -> tauri::Result<()> {
+    let usage = usage.to_vec();
     tray.with_inner_tray_icon(move |tray| {
         // Tauri dispatches this closure onto the main thread. Keep foreign
         // exceptions inside this boundary rather than unwinding through Rust.
@@ -79,12 +144,26 @@ pub(super) fn decorate(tray: &tauri::tray::TrayIcon) -> tauri::Result<()> {
             let Some(menu) = tray.ns_status_item().and_then(|status| status.menu(mtm)) else {
                 return;
             };
-            style_menu(&menu, mtm);
+            style_menu(&menu, !usage.is_empty(), mtm);
             for item in menu.itemArray() {
-                if item.isSeparatorItem() || !item.isEnabled() {
+                if item.isSeparatorItem() {
                     continue;
                 }
                 let title = item.title().to_string();
+                if !item.isEnabled() {
+                    if let Some(section) = usage.iter().find(|s| s.title == title) {
+                        item.setView(Some(&usage_header(section, mtm)));
+                    }
+                    continue;
+                }
+                if let Some(account) = usage
+                    .iter()
+                    .flat_map(|section| &section.accounts)
+                    .find(|account| account.menu_title() == title)
+                {
+                    item.setView(Some(&usage_row(account, mtm)));
+                    continue;
+                }
                 if let Some(action) = ACTIONS.iter().find(|a| a.title == title) {
                     let image = action_icon(action);
                     item.setImage(image.as_deref());
@@ -244,8 +323,173 @@ fn row(
     view.into_super()
 }
 
-fn style_menu(menu: &NSMenu, mtm: MainThreadMarker) {
-    menu.setMinimumWidth(WIDTH);
+/// "Claude" on the left and "Updated 14:32" on the right, in the muted style
+/// of a status menu's group title.
+fn usage_header(section: &UsageSection, mtm: MainThreadMarker) -> Retained<NSView> {
+    let view = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::ZERO, NSSize::new(USAGE_WIDTH, USAGE_HEADER_HEIGHT)),
+    );
+    view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    let half = (USAGE_WIDTH - USAGE_INSET * 2.0) / 2.0;
+    view.addSubview(&usage_label(
+        &section.title,
+        &NSFont::systemFontOfSize_weight(11.0, unsafe { NSFontWeightSemibold }),
+        &NSColor::secondaryLabelColor(),
+        NSRect::new(NSPoint::new(USAGE_INSET, 5.0), NSSize::new(half, 14.0)),
+        NSTextAlignment::Left,
+        mtm,
+    ));
+    if let Some(note) = &section.note {
+        let label = usage_label(
+            note,
+            &NSFont::systemFontOfSize(11.0),
+            &NSColor::tertiaryLabelColor(),
+            NSRect::new(NSPoint::new(USAGE_INSET + half, 5.0), NSSize::new(half, 14.0)),
+            NSTextAlignment::Right,
+            mtm,
+        );
+        label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+        view.addSubview(&label);
+    }
+    view
+}
+
+/// One account: its name over a colored meter per window, or over the reason
+/// it has none. Choosing it opens Settings → Accounts.
+fn usage_row(account: &UsageAccount, mtm: MainThreadMarker) -> Retained<NSView> {
+    let height = if account.meters.is_empty() {
+        USAGE_DETAIL_ROW_HEIGHT
+    } else {
+        USAGE_ROW_HEIGHT
+    };
+    let frame = NSRect::new(NSPoint::ZERO, NSSize::new(USAGE_WIDTH, height));
+    let view: Retained<MenuRow> = unsafe { msg_send![MenuRow::alloc(mtm), initWithFrame: frame] };
+    view.setToolTip(Some(&NSString::from_str("Open Accounts in Settings")));
+    let content = USAGE_WIDTH - USAGE_INSET * 2.0;
+    let small = NSFont::systemFontOfSize(11.0);
+    let secondary = NSColor::secondaryLabelColor();
+    view.addSubview(&usage_label(
+        &account.title,
+        &NSFont::systemFontOfSize(13.0),
+        &NSColor::labelColor(),
+        NSRect::new(
+            NSPoint::new(USAGE_INSET, height - 23.0),
+            NSSize::new(content, 17.0),
+        ),
+        NSTextAlignment::Left,
+        mtm,
+    ));
+    if account.meters.is_empty() {
+        view.addSubview(&usage_label(
+            account.detail.as_deref().unwrap_or_default(),
+            &small,
+            &secondary,
+            NSRect::new(NSPoint::new(USAGE_INSET, 5.0), NSSize::new(content, 14.0)),
+            NSTextAlignment::Left,
+            mtm,
+        ));
+        return view.into_super();
+    }
+    let count = account.meters.len() as f64;
+    let column = (content - METER_GAP * (count - 1.0)) / count;
+    for (index, meter) in account.meters.iter().enumerate() {
+        let x = USAGE_INSET + index as f64 * (column + METER_GAP);
+        // Fits "100%" and "Full" in 11pt monospaced digits.
+        let value_width = 32.0;
+        view.addSubview(&usage_label(
+            &meter.caption,
+            &small,
+            &secondary,
+            NSRect::new(
+                NSPoint::new(x, 13.0),
+                NSSize::new(column - value_width - 4.0, 14.0),
+            ),
+            NSTextAlignment::Left,
+            mtm,
+        ));
+        let value_color = if meter.tone == UsageTone::Critical {
+            NSColor::systemRedColor()
+        } else {
+            NSColor::labelColor()
+        };
+        view.addSubview(&usage_label(
+            &meter.value,
+            &NSFont::monospacedDigitSystemFontOfSize_weight(11.0, unsafe { NSFontWeightRegular }),
+            &value_color,
+            NSRect::new(
+                NSPoint::new(x + column - value_width, 13.0),
+                NSSize::new(value_width, 14.0),
+            ),
+            NSTextAlignment::Right,
+            mtm,
+        ));
+        let bar = NSImageView::imageViewWithImage(&meter_bar(meter, column), mtm);
+        bar.setFrame(NSRect::new(
+            NSPoint::new(x, 6.0),
+            NSSize::new(column, METER_BAR_HEIGHT),
+        ));
+        view.addSubview(&bar);
+    }
+    view.into_super()
+}
+
+/// A rounded track filled to the window's used share in green, yellow or red.
+/// Drawn on demand so the track follows the menu's light or dark appearance.
+fn meter_bar(meter: &UsageMeter, width: f64) -> Retained<NSImage> {
+    let fill = match meter.tone {
+        UsageTone::Ok => NSColor::systemGreenColor(),
+        UsageTone::Warn => NSColor::systemYellowColor(),
+        UsageTone::Critical => NSColor::systemRedColor(),
+    };
+    let fraction = (meter.percent / 100.0).clamp(0.0, 1.0);
+    let draw = block2::RcBlock::new(move |rect: NSRect| {
+        let radius = rect.size.height / 2.0;
+        NSColor::labelColor().colorWithAlphaComponent(0.12).setFill();
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, radius, radius).fill();
+        if fraction > 0.0 {
+            fill.setFill();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                NSRect::new(
+                    rect.origin,
+                    NSSize::new(
+                        (rect.size.width * fraction).max(rect.size.height),
+                        rect.size.height,
+                    ),
+                ),
+                radius,
+                radius,
+            )
+            .fill();
+        }
+        Bool::YES
+    });
+    NSImage::imageWithSize_flipped_drawingHandler(
+        NSSize::new(width, METER_BAR_HEIGHT),
+        false,
+        &draw,
+    )
+}
+
+fn usage_label(
+    value: &str,
+    font: &NSFont,
+    color: &NSColor,
+    frame: NSRect,
+    alignment: NSTextAlignment,
+    mtm: MainThreadMarker,
+) -> Retained<NSTextField> {
+    let label = NSTextField::labelWithString(&NSString::from_str(value), mtm);
+    label.setFont(Some(font));
+    label.setTextColor(Some(color));
+    label.setAlignment(alignment);
+    label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    label.setFrame(frame);
+    label
+}
+
+fn style_menu(menu: &NSMenu, usage: bool, mtm: MainThreadMarker) {
+    menu.setMinimumWidth(if usage { USAGE_WIDTH } else { WIDTH });
     unsafe { menu.setFont(Some(&NSFont::systemFontOfSize(14.0))) };
     let Some(header) = menu.itemAtIndex(0) else {
         return;
@@ -507,5 +751,45 @@ mod tests {
             [0, 0, 255, 255]
         );
         assert!(icon_for("missing", &mascots).is_none());
+    }
+
+    #[test]
+    fn usage_rows_read_the_webview_payload_and_draw_every_meter_bar() {
+        // The shape `menuBarUsageSections` sends from the webview.
+        let sections: Vec<UsageSection> = serde_json::from_value(serde_json::json!([{
+            "title": "Claude",
+            "note": "Updated 14:32",
+            "accounts": [
+                {
+                    "title": "Work",
+                    "detail": null,
+                    "meters": [
+                        { "caption": "5h · 16:40", "value": "20%", "percent": 20, "tone": "ok" },
+                        { "caption": "Weekly · Fri 09:00", "value": "85%", "percent": 85, "tone": "warn" },
+                        { "caption": "Monthly · Nov 27", "value": "Full", "percent": 100, "tone": "critical" }
+                    ]
+                },
+                { "title": "Old", "detail": "Claude sign-in expired", "meters": [] }
+            ]
+        }]))
+        .unwrap();
+        let [work, old] = &sections[0].accounts[..] else {
+            panic!("two accounts");
+        };
+        assert_eq!(
+            work.menu_title(),
+            "Work: 5h · 16:40 20%, Weekly · Fri 09:00 85%, Monthly · Nov 27 Full"
+        );
+        assert_eq!(old.menu_title(), "Old: Claude sign-in expired");
+        objc2::exception::catch(|| {
+            for meter in &work.meters {
+                let bar = meter_bar(meter, 90.0);
+                let raster = unsafe {
+                    bar.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
+                };
+                assert!(raster.is_some(), "{} did not draw", meter.caption);
+            }
+        })
+        .unwrap_or_else(|exception| panic!("AppKit rejected a usage row: {exception:?}"));
     }
 }
